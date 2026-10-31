@@ -1,7 +1,8 @@
 # Aldermere
 
-> **Repository URL: _pending_** — this repository has not been published yet. The
-> public URL will be filled in once the remote repository is created.
+[![CI](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml)
+
+> **Repository:** https://github.com/fabianRivero/bs-final
 
 > **Note on language.** The assignment brief for this project is written in
 > Spanish, but the project itself is developed entirely in English: the game
@@ -102,7 +103,7 @@ key.
 | Deployment | GitHub Pages | — | Static HTML5 build of the Godot project, publicly playable. |
 | Assets | Kenney.nl / LPC (CC0) + Google Fonts (OFL) | — | Licences allow commercial use and redistribution without friction. |
 | Lighting | Tile palettes + tint overlay | — | ~80 % of the day/night effect for ~20 % of the work. |
-| Version control | Git | 2.55+ | Tracked by the project; the public remote is created separately. |
+| Version control | Git | 2.55+ | Tracked in the project; the public remote lives at https://github.com/fabianRivero/bs-final |
 
 ---
 
