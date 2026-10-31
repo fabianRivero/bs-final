@@ -196,12 +196,15 @@ final-project-aldermere/
 │   └── prompts/           # Plain-text prompt templates for the build-time pipeline
 ├── tools/                 # Command line tools that drive the project
 │   ├── simulate.py        # CLI: simulate a tick range and print the day/hour table
-│   ├── validate.py        # (content) CLI: validate authored and generated content
 │   ├── export_web.py      # CLI: export the game content to the Godot JSON contract
 │   └── parity_check.py    # CLI: compare the Python state with what Godot renders
+├── content/               # (see above) authored + generated content and the validators
+│   ├── validate.py        # CLI: validate authored and generated content
+│   └── generate.py        # CLI: run the build-time LLM content pipeline
 ├── tests/                 # pytest suite for the simulation core and the tooling
 │   ├── test_time.py       # Exhaustive tick arithmetic tests (all 288 ticks)
 │   ├── test_determinism.py# The same input sequence always yields the same state
+│   ├── test_tools_cli.py  # Contract tests for the command line entry points
 │   └── fixtures/          # Sample JSON fixtures used by the test suite
 ├── game/                  # Godot 4.6 project: scenes, tilesets, GDScript (presentation only)
 ├── docs/                  # Project documentation (architecture, prompts, walkthrough)
@@ -288,7 +291,7 @@ install, test, build or play the game.
 
 ## License
 
-MIT. See the `LICENSE` file for the full text.
+MIT. The full text lives in the `LICENSE` file at the root of the repository.
 
 ## Acknowledgements
 

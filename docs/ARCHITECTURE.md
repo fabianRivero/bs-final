@@ -59,9 +59,9 @@ Everything else in the project derives from that sentence.
      |   world.py        composition root: WorldSim                 |
      +-------------------------------------------------------------+
                  |
-                 |  tools/export.py
-                 v
-        build/game_content.json        <-- the single contract
+                  |  tools/export_web.py
+                  v
+         build/game_content.json        <-- the single contract
                  |
                  v
      +-------------------------------------------------------------+
@@ -131,7 +131,7 @@ ever shows it matters.
 | `content/generate.py` | Build-time pipeline: prompts to LLM to validated output | Run inside the game |
 | `content/llm.py` | Abstracted LLM client with an on-disk cache | Be called from Godot |
 | `tools/simulate.py` | CLI: simulate a tick range, dump state, list events | — |
-| `tools/export.py` | Serialise the content to `build/game_content.json` | Depend on the LLM API |
+| `tools/export_web.py` | Serialise the content to `build/game_content.json` and drive the HTML5 export | Depend on the LLM API |
 | `tools/parity_check.py` | Compare the Python state with what Godot renders | Write into the content |
 
 ## Dependency direction
@@ -151,7 +151,7 @@ endings   -> state, missions, investigation
 world     -> state, missions, dialogue, investigation, endings, content.schema
 
 content.generate -> content.llm, content.schema
-tools.export     -> world, content.schema
+tools.export_web -> world, content.schema
 ```
 
 ## The Godot boundary
