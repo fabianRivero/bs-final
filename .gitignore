@@ -1,0 +1,46 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and coverage artefacts
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build output
+build/
+dist/
+*.egg-info/
+
+# Godot export artefacts
+*.pck
+*.exe
+# Note: export_presets.cfg IS versioned on purpose. It defines the export
+# presets used to build the HTML5 and Windows artefacts reproducibly.
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Caches and logs
+.cache/
+logs/
+*.log
+
+# Editor and OS files
+.idea/
+.vscode/
+*.import
+.DS_Store
+Thumbs.db
+
+# Note: uv.lock IS versioned on purpose. Reproducible installs require it.
