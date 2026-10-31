@@ -1,0 +1,42 @@
+{
+  "content_version": "0.1.0-fixture",
+  "zones": [
+    { "id": "ZONE_PORT", "name": "Harbour" },
+    { "id": "ZONE_MARKET", "name": "Market" },
+    { "id": "ZONE_TAVERN", "name": "Tavern" }
+  ],
+  "npcs": [
+    {
+      "id": "NPC_MARTA",
+      "name": "Marta",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 20, "zone": "ZONE_PORT", "tile": [12, 7], "activity": "mending_nets", "interactable": true },
+        { "start_tick": 20, "end_tick": 52, "zone": "ZONE_PORT", "tile": [12, 7], "activity": "selling_fish", "interactable": true },
+        { "start_tick": 52, "end_tick": 60, "zone": "ZONE_TAVERN", "tile": [9, 6], "activity": "eating", "interactable": true },
+        { "start_tick": 60, "end_tick": 76, "zone": "ZONE_PORT", "tile": [13, 7], "activity": "repairing_boat", "interactable": true },
+        { "start_tick": 76, "end_tick": 96, "zone": "ZONE_TAVERN", "tile": [10, 6], "activity": "resting", "interactable": false }
+      ]
+    },
+    {
+      "id": "NPC_OMAR",
+      "name": "Omar",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 32, "zone": "ZONE_TAVERN", "tile": [11, 6], "activity": "sleeping", "interactable": false },
+        { "start_tick": 32, "end_tick": 60, "zone": "ZONE_MARKET", "tile": [4, 3], "activity": "selling_bread", "interactable": true },
+        { "start_tick": 60, "end_tick": 88, "zone": "ZONE_MARKET", "tile": [5, 3], "activity": "delivering_bread", "interactable": true },
+        { "start_tick": 88, "end_tick": 96, "zone": "ZONE_TAVERN", "tile": [12, 6], "activity": "resting", "interactable": false }
+      ]
+    },
+    {
+      "id": "NPC_LENA",
+      "name": "Lena",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 16, "zone": "ZONE_MARKET", "tile": [6, 4], "activity": "sleeping", "interactable": false },
+        { "start_tick": 16, "end_tick": 40, "zone": "ZONE_MARKET", "tile": [6, 4], "activity": "sorting_produce", "interactable": true },
+        { "start_tick": 40, "end_tick": 64, "zone": "ZONE_PORT", "tile": [11, 8], "activity": "tallying_cargo", "interactable": true },
+        { "start_tick": 64, "end_tick": 92, "zone": "ZONE_MARKET", "tile": [7, 4], "activity": "greeting_customers", "interactable": true },
+        { "start_tick": 92, "end_tick": 96, "zone": "ZONE_MARKET", "tile": [8, 4], "activity": "closing_up", "interactable": false }
+      ]
+    }
+  ]
+}

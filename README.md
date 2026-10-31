@@ -190,20 +190,27 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 final-project-aldermere/
 ├── core/                  # Simulation core: the single source of truth for world state
 │   ├── time.py            # Deterministic tick arithmetic, clock formatting, deadlines
+│   ├── state.py           # Derived world state: WorldState = derive(tick, decisions)
+│   ├── schedule.py        # NPC daily routines: where each villager is at a given tick
+│   ├── lighting.py        # Day/night cycle: phase, tint colour and overlay opacity
+│   ├── world.py           # Composition root: WorldSim, the player-facing API
 │   └── __init__.py        # Public exports of the core constants and helpers
 ├── content/               # Game content: authored data, generated data, prompts
 │   ├── base/              # Hand-authored content JSON (premise, zones, npcs, events, ...)
 │   ├── generated/         # LLM-generated content, versioned and committed
-│   └── prompts/           # Plain-text prompt templates for the build-time pipeline
+│   ├── prompts/           # Plain-text prompt templates for the build-time pipeline
+│   ├── validate.py        # CLI: validate authored and generated content
+│   └── generate.py        # CLI: run the build-time LLM content pipeline
 ├── tools/                 # Command line tools that drive the project
 │   ├── simulate.py        # CLI: simulate a tick range and print the day/hour table
 │   ├── export_web.py      # CLI: export the game content to the Godot JSON contract
 │   └── parity_check.py    # CLI: compare the Python state with what Godot renders
-├── content/               # (see above) authored + generated content and the validators
-│   ├── validate.py        # CLI: validate authored and generated content
-│   └── generate.py        # CLI: run the build-time LLM content pipeline
 ├── tests/                 # pytest suite for the simulation core and the tooling
 │   ├── test_time.py       # Exhaustive tick arithmetic tests (all 288 ticks)
+│   ├── test_state.py      # Derived state, flag vocabulary and purity guarantees
+│   ├── test_schedule.py   # NPC routines, availability and schedule validation
+│   ├── test_lighting.py   # The seven lighting phases cover the day without gaps
+│   ├── test_world.py      # WorldSim: advance, invalid actions, determinism
 │   ├── test_determinism.py# The same input sequence always yields the same state
 │   ├── test_tools_cli.py  # Contract tests for the command line entry points
 │   └── fixtures/          # Sample JSON fixtures used by the test suite
@@ -234,9 +241,16 @@ final-project-aldermere/
   96 ticks per day and 288 ticks per cycle, with pure conversion helpers
   between ticks and calendar instants, inclusive deadline comparisons and an
   explicit `ClockOverflowError` instead of silent wrap-around.
+- **Derived world state.** The world is never stored. `WorldState` is a pure
+  function of `(tick, decisions)`, so a save file only needs the tick, the
+  player's decisions and the position, and reloading reconstructs exactly the
+  same world. The derivation is guaranteed side-effect free: the same inputs
+  always produce an equal state.
 - **NPC schedules.** Every villager owns a list of schedule blocks that
   resolve to a zone, a tile, an activity and an interactable flag as a pure
   function of the current tick, so the town genuinely follows a daily routine.
+  The routine repeats every in-game day, and an NPC outside their schedule is
+  simply not interactable.
 - **Scheduled events.** World-changing events fire exactly once when the
   clock reaches their activation tick and their precondition holds: the first
   death becoming known, the outbreak being acknowledged, the harbour closing,
@@ -244,7 +258,8 @@ final-project-aldermere/
 - **Day/night lighting cycle.** Seven lighting phases cover the 96 ticks of a
   day with no gaps and no overlaps. The phase, the tint colour and the
   overlay opacity are derived in Python and exported as data; Godot only
-  applies them.
+  applies them. Opacity is interpolated between phases so the light never
+  pops.
 - **Investigation loop.** Symptoms are reported by neighbours with their
   origin and tick, sources are consulted and can support or refute candidate
   causes, hypotheses are written in the notebook with a

@@ -154,6 +154,70 @@ content.generate -> content.llm, content.schema
 tools.export_web -> world, content.schema
 ```
 
+## The derived state, concretely
+
+Phase F1 implemented the first four modules of the map above. The shape of the
+derived state is already fixed, and the rest of the phases must follow it.
+
+### `core/state.py`
+
+```python
+derive(tick: int, decisions: Sequence[Decision]) -> WorldState
+```
+
+`WorldState` is a frozen dataclass holding `tick`, the calendar triple
+(`day`, `hour`, `minute`), the `decisions` tuple and the derived `flags`
+frozenset. The flag vocabulary is derived from the decisions themselves, so
+no rule lives in two places:
+
+| Flag | Raised by |
+|---|---|
+| `decided:<kind>` | any decision of that kind |
+| `talked:<target>` | a `talk` decision targeting that NPC |
+| `examined:<target>` | an `examine` decision targeting that object |
+| `visited:<zone>` | a `move` decision into that zone |
+| `knows:symptom:<id>` | a `report_symptom` decision |
+| `<explicit>` | the `sets_flags` key of the decision payload |
+
+Helpers: `has_flag(name)`, `decisions_of(kind)`, `symptoms_known()`.
+
+### `core/schedule.py`
+
+`npc_state(npc, tick)` normalises the tick with `tick % TICKS_PER_DAY`, so the
+daily pattern repeats on every day of the cycle. Schedule blocks cover the
+half-open range `[start_tick, end_tick)` and must not overlap; an overlapping
+schedule raises `ScheduleOverlapError` at load time. When no block covers the
+tick the NPC falls back to its default state (idle, not interactable), unless
+the schedule declares an explicit `default` block.
+
+### `core/lighting.py`
+
+Seven phases cover the 96 ticks of a day without gaps and without overlaps:
+
+| Phase | Ticks | Clock | Overlay rgb | Opacity |
+|---|---|---|---|---|
+| `dawn_early` | 0-17 | 00:00-04:15 | (40, 50, 90) | 0.55 |
+| `dawn` | 18-25 | 04:30-06:15 | (255, 170, 110) | 0.25 |
+| `morning` | 26-37 | 06:30-09:15 | (255, 214, 170) | 0.08 |
+| `day` | 38-65 | 09:30-16:15 | (255, 255, 255) | 0.00 |
+| `afternoon` | 66-75 | 16:30-18:45 | (255, 226, 180) | 0.06 |
+| `dusk` | 76-81 | 19:00-20:15 | (255, 150, 110) | 0.28 |
+| `night` | 82-95 | 20:30-23:45 | (40, 50, 90) | 0.55 |
+
+`lerp_opacity(prev, next, t)` is the pure interpolation used to blend the
+overlay across a phase boundary; it is exported to Godot so both sides
+compute bit-identical values.
+
+### `core/world.py`
+
+`WorldSim` is the composition root. It stores **only** the tick and the list
+of decisions; `state()`, `npc_states()` and `light()` recompute everything
+else on demand. `advance(action)` validates the action *before* moving the
+clock: an invalid action raises `InvalidActionError` and does **not** consume
+a tick. `apply(decision)` is the hook for events, which record their effect
+without moving the clock.
+
+
 ## The Godot boundary
 
 Godot is allowed to: read the exported JSON, draw it, and emit player
