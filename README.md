@@ -90,8 +90,8 @@ key.
 
 | Layer | Technology | Version | Why |
 |---|---|---|---|
-| Game engine | Godot Engine | 4.6-stable | Mature 2D tilemap rendering, frictionless HTML5 export, typed GDScript. |
-| Game scripting | GDScript | 4.6 | Pairs natively with the engine, no extra build chain. |
+| Game engine | Godot Engine | 4.7.2-stable | Mature 2D tilemap rendering, frictionless HTML5 export, typed GDScript. |
+| Game scripting | GDScript | 4.7 | Pairs natively with the engine, no extra build chain. |
 | Simulation core | Python | 3.14 | Business logic that is testable independently of the engine. |
 | Data validation | Pydantic | 2.x | Typed models that validate content JSON in CI and in the generator. |
 | Schema validation | jsonschema | 4.x | Second, independent layer that validates the JSON Godot consumes. |
@@ -156,6 +156,28 @@ godot --path game/
 
 The playable client reads `build/game_content.json`. Until that artefact is
 generated (planned in F3), the Godot side is a placeholder.
+
+### Run the Godot tests
+
+The Godot layer has its own headless test suites, written in GDScript:
+
+```bash
+godot --headless --path game --script res://tests/smoke_test.gd
+godot --headless --path game --script res://tests/integration_test.gd
+godot --headless --path game --script res://tests/scenes_test.gd
+```
+
+They cover the calendar, the local derivation, the lighting table, the
+content contract and the flow from input to tick. The `Makefile` wraps them
+as `make godot-test`.
+
+The screenshots need a real display driver; `--headless` does not render:
+
+```bash
+godot --path game --script res://tests/capture_screens.gd
+```
+
+They are written to `user://screenshots`, one per lighting phase.
 
 ### Regenerate the AI content
 
@@ -237,8 +259,14 @@ final-project-aldermere/
 │   └── generate.py        # CLI: run the build-time LLM content pipeline
 ├── tools/                 # Command line tools that drive the project
 │   ├── simulate.py        # CLI: simulate a tick range and print the day/hour table
-│   ├── export_web.py      # CLI: export the game content to the Godot JSON contract
+│   ├── export_web.py      # CLI: export the content contract to Godot and build for web
 │   └── parity_check.py    # CLI: compare the Python state with what Godot renders
+├── game/                  # Godot 4.7 project: scenes, tilesets, GDScript (presentation only)
+│   ├── autoload/          # GameState, ContentDB, Lighting, SceneRouter
+│   ├── scenes/            # title, game, ending
+│   ├── world/ player/ npc/ ui/
+│   ├── data/              # game_content.json, exported from Python
+│   └── tests/             # Headless GDScript test suites
 ├── tests/                 # pytest suite for the simulation core and the tooling
 │   ├── test_time.py       # Exhaustive tick arithmetic tests (all 288 ticks)
 │   ├── test_state.py      # Derived state, flag vocabulary and purity guarantees
@@ -300,6 +328,18 @@ final-project-aldermere/
   overlay opacity are derived in Python and exported as data; Godot only
   applies them. Opacity is interpolated between phases so the light never
   pops.
+- **Two implementations, one vocabulary.** The derivation of the world state
+  exists twice: once in Python, where it is covered by the test suite, and
+  once in GDScript, where the client needs it to answer the player
+  immediately. Both produce exactly the same flags from the same decisions,
+  and `tools/parity_check.py` compares them tick by tick. The duplication is
+  deliberately small and mechanically verified instead of hidden.
+- **A playable client.** The Godot layer boots into a title screen, renders
+  the town on a tile grid, moves the character one cell at a time, advances
+  the clock on every step, and drives the HUD, the NPC placement and the
+  lighting from a single `tick_changed` signal. It has its own headless
+  test suites and a screenshot harness that captures the seven lighting
+  phases.
 - **Investigation loop.** Symptoms are reported by neighbours with their
   origin and tick, sources are consulted and can support or refute candidate
   causes, hypotheses are written in the notebook with a

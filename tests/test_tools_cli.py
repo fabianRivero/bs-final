@@ -8,9 +8,14 @@ they never break the CI pipeline.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from content import generate, validate
+from core.lighting import LIGHTING_TABLE
+from core.time import MINUTES_PER_TICK, TICKS_PER_DAY, TOTAL_TICKS
 from tools import export_web, parity_check, simulate
 
 
@@ -106,11 +111,74 @@ def test_content_generate_dry_run_exits_successfully(
 
 
 def test_export_web_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
-    """The export stub succeeds and points at the phase that implements it."""
+    """The export succeeds and points at the phase that implements the HTML5 build."""
     exit_code = export_web.main([])
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "PLAN.md F5" in captured.out
+
+
+def test_export_web_writes_the_game_contract(tmp_path: Path) -> None:
+    """The export writes the JSON contract the Godot project consumes."""
+    destination = tmp_path / "game_content.json"
+    exit_code = export_web.main(["--game-content", str(destination)])
+    assert exit_code == 0
+    assert destination.exists()
+
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document["content_version"] == "0.1.0-fixture"
+    assert len(document["zones"]) == 2
+    assert len(document["npcs"]) == 2
+
+
+def test_export_web_carries_the_lighting_table(tmp_path: Path) -> None:
+    """The exported lighting table is the one of ``core.lighting``."""
+    destination = tmp_path / "game_content.json"
+    export_web.main(["--game-content", str(destination)])
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    phases = document["lighting"]
+    assert len(phases) == len(LIGHTING_TABLE)
+    for phase, expected in zip(phases, LIGHTING_TABLE, strict=True):
+        assert phase["phase_id"] == expected.id
+        assert phase["start_tick"] == expected.start_tick
+        assert phase["end_tick"] == expected.end_tick
+        assert phase["rgb"] == list(expected.rgb)
+        assert phase["opacity"] == expected.opacity
+
+
+def test_export_web_carries_the_clock_constants(tmp_path: Path) -> None:
+    """The exported clock constants are the ones of ``core.time``."""
+    destination = tmp_path / "game_content.json"
+    export_web.main(["--game-content", str(destination)])
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert document["clock"]["minutes_per_tick"] == MINUTES_PER_TICK
+    assert document["clock"]["ticks_per_day"] == TICKS_PER_DAY
+    assert document["clock"]["total_ticks"] == TOTAL_TICKS
+
+
+def test_export_web_is_deterministic(tmp_path: Path) -> None:
+    """Regenerating the contract without content changes yields the same bytes."""
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    export_web.main(["--game-content", str(first)])
+    export_web.main(["--game-content", str(second)])
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_export_web_document_validates_against_the_schema() -> None:
+    """The exported document is a valid content document."""
+    document = export_web.build_document()
+    export_web.validate_document(document)
+
+
+def test_export_web_rejects_an_invalid_document() -> None:
+    """A document that breaks the schema is reported, not exported."""
+    document = export_web.build_document()
+    document["zones"] = [{"id": "ZN_BROKEN"}]
+    with pytest.raises(ValueError):
+        export_web.validate_document(document)
 
 
 def test_parity_check_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
