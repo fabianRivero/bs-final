@@ -1,0 +1,17 @@
+{
+  "premise": {
+    "id": "PR_PENDING",
+    "title": "TBD — pending design decision (P3)",
+    "disease_name": "TBD — pending design decision (P3)",
+    "symptom_signature": "TBD — pending design decision (P3)",
+    "progression_stages": [
+      "TBD — pending design decision (P3)"
+    ],
+    "transmission_mode": "TBD — pending design decision (P3)",
+    "partial_cure_source": "TBD — pending design decision (P3)",
+    "total_cure_source": "TBD — pending design decision (P3)",
+    "responsible_actor": "TBD — pending design decision (P3)",
+    "responsible_note": "TBD — pending design decision (P3)",
+    "outcome_notes": "TBD — pending design decision (P3)"
+  }
+}

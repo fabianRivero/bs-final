@@ -1,0 +1,405 @@
+{
+  "content_version": "0.1.0-fixture",
+  "premise": {
+    "id": "PR_FIXTURE",
+    "title": "Fixture premise plate",
+    "disease_name": "Grey Wither",
+    "symptom_signature": "A spreading numbness that starts in the hands.",
+    "progression_stages": ["SYM_NUMBNESS", "SYM_RASH"],
+    "transmission_mode": "environmental exposure",
+    "partial_cure_source": "SRC_HERBAL",
+    "total_cure_source": "SRC_JOURNAL",
+    "responsible_actor": "The miller",
+    "responsible_note": "A reasonable decision repeated for years.",
+    "outcome_notes": "Four endings, one of them a failure."
+  },
+  "zones": [
+    {
+      "id": "ZN_YARD",
+      "name": "Mill Yard",
+      "tiles_path": "res://assets/tiles/mill_yard.png",
+      "width": 24,
+      "height": 18,
+      "is_interior": false,
+      "ambient": "cold morning air"
+    },
+    {
+      "id": "ZN_HALL",
+      "name": "Village Hall",
+      "tiles_path": "res://assets/tiles/village_hall.png",
+      "width": 20,
+      "height": 14,
+      "is_interior": true,
+      "ambient": "dim lamplight"
+    }
+  ],
+  "npcs": [
+    {
+      "id": "NPC_MILLER",
+      "name": "The Miller",
+      "role": "miller",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 32, "zone_id": "ZN_HALL", "tile": [4, 5], "activity": "sleeping", "interactable": false },
+        { "start_tick": 32, "end_tick": 72, "zone_id": "ZN_YARD", "tile": [8, 6], "activity": "grinding_grain", "interactable": true },
+        { "start_tick": 72, "end_tick": 96, "zone_id": "ZN_YARD", "tile": [11, 6], "activity": "sweeping", "interactable": true }
+      ],
+      "dialogue_root": "DL_MILLER_ROOT",
+      "portrait": "res://assets/portraits/miller.png"
+    },
+    {
+      "id": "NPC_KEEPER",
+      "name": "The Village Keeper",
+      "role": "keeper",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 24, "zone_id": "ZN_HALL", "tile": [9, 4], "activity": "resting", "interactable": false },
+        { "start_tick": 24, "end_tick": 60, "zone_id": "ZN_HALL", "tile": [6, 4], "activity": "reading_registers", "interactable": true },
+        { "start_tick": 60, "end_tick": 96, "zone_id": "ZN_YARD", "tile": [5, 7], "activity": "walking_the_boundary", "interactable": true }
+      ],
+      "dialogue_root": "DL_KEEPER_ROOT",
+      "portrait": null
+    }
+  ],
+  "symptoms": [
+    {
+      "id": "SYM_NUMBNESS",
+      "label": "Numbness",
+      "description": "Fingers go numb and stay numb.",
+      "source_npc": "NPC_MILLER",
+      "reported_by": ["NPC_MILLER"],
+      "observed_at_tick": 34
+    },
+    {
+      "id": "SYM_RASH",
+      "label": "Rash",
+      "description": "A pale rash on the forearms.",
+      "source_npc": "NPC_KEEPER",
+      "reported_by": ["NPC_KEEPER"],
+      "observed_at_tick": 40
+    }
+  ],
+  "sources": [
+    {
+      "id": "SRC_HERBAL",
+      "kind": "herbal",
+      "title": "The village herbal",
+      "location": "Kept on a shelf in the village hall.",
+      "supports": ["CAUSE_MOULD"],
+      "refutes": [],
+      "readable_ticks": [30, 60, 90]
+    },
+    {
+      "id": "SRC_JOURNAL",
+      "kind": "journal",
+      "title": "The keeper's journal",
+      "location": "Left open on the desk in the village hall.",
+      "supports": ["CAUSE_MOULD"],
+      "refutes": ["CAUSE_TOXIN"],
+      "readable_ticks": [48, 120]
+    },
+    {
+      "id": "SRC_BOOK",
+      "kind": "book",
+      "title": "A book on spoiled grain",
+      "location": "On the shelf beside the herbal.",
+      "supports": [],
+      "refutes": ["CAUSE_TOXIN"],
+      "readable_ticks": [30]
+    }
+  ],
+  "causes": [
+    {
+      "id": "CAUSE_MOULD",
+      "label": "Moulded grain",
+      "category": "fungus",
+      "description": "Grain kept too long in a damp store."
+    },
+    {
+      "id": "CAUSE_TOXIN",
+      "label": "Leached mineral",
+      "category": "mineral",
+      "description": "A mineral drawn from the water table into the mill race."
+    }
+  ],
+  "hypotheses": [
+    {
+      "id": "HYP_MOULD",
+      "symptom_ids": ["SYM_NUMBNESS", "SYM_RASH"],
+      "cause_id": "CAUSE_MOULD",
+      "status": "pending",
+      "verification_method": "field_inspection",
+      "verification_target": "ZN_YARD"
+    },
+    {
+      "id": "HYP_TOXIN",
+      "symptom_ids": ["SYM_NUMBNESS"],
+      "cause_id": "CAUSE_TOXIN",
+      "status": "refuted",
+      "verification_method": "document_cross_check",
+      "verification_target": "SRC_JOURNAL"
+    }
+  ],
+  "events": [
+    {
+      "id": "EV_YARD_CLOSURE",
+      "name": "The mill yard is closed",
+      "activation_tick": 180,
+      "zone_ids": ["ZN_YARD"],
+      "npc_ids": ["NPC_MILLER"],
+      "description": "The keeper seals the yard while the cause is unknown.",
+      "effects": { "closes_zones": ["ZN_YARD"] },
+      "sets_flags": ["yard_closed"],
+      "precondition": "flag:first_death_known"
+    }
+  ],
+  "missions": [
+    {
+      "id": "MS_MAIN",
+      "title": "Find out what is making the village ill",
+      "kind": "main",
+      "giver_npc": "NPC_KEEPER",
+      "steps": [
+        {
+          "id": "step_1",
+          "description": "Ask the neighbours what they are feeling.",
+          "objective_kind": "collect_symptom",
+          "target_id": "SYM_NUMBNESS",
+          "requires_flags": [],
+          "sets_flags": ["asked_neighbours"]
+        },
+        {
+          "id": "step_2",
+          "description": "Read the herbal and the keeper's journal.",
+          "objective_kind": "consult_source",
+          "target_id": "SRC_HERBAL",
+          "requires_flags": ["asked_neighbours"],
+          "sets_flags": ["sources_consulted"]
+        },
+        {
+          "id": "step_3",
+          "description": "Write down a cause that fits the symptoms.",
+          "objective_kind": "formulate_hypothesis",
+          "target_id": "HYP_MOULD",
+          "requires_flags": ["sources_consulted"],
+          "sets_flags": ["hypothesis_formed"]
+        },
+        {
+          "id": "step_4",
+          "description": "Check the mill store with your own eyes.",
+          "objective_kind": "verify",
+          "target_id": "ZN_YARD",
+          "requires_flags": ["hypothesis_formed"],
+          "sets_flags": ["hypothesis_verified"]
+        },
+        {
+          "id": "step_5",
+          "description": "Give the keeper the remedy before the second evening.",
+          "objective_kind": "act",
+          "target_id": "NPC_KEEPER",
+          "requires_flags": ["hypothesis_verified"],
+          "sets_flags": ["cure_administered"]
+        }
+      ],
+      "deadline_tick": 168,
+      "reward_flags": ["knows_truth"]
+    },
+    {
+      "id": "MS_SIDE_BOUNDARY",
+      "title": "Walk the boundary with the keeper",
+      "kind": "exploration",
+      "giver_npc": "NPC_KEEPER",
+      "steps": [
+        {
+          "id": "step_1",
+          "description": "Follow the keeper along the mill race.",
+          "objective_kind": "verify",
+          "target_id": "ZN_YARD",
+          "requires_flags": [],
+          "sets_flags": ["walked_boundary"]
+        }
+      ],
+      "deadline_tick": null,
+      "reward_flags": ["saw_the_race"]
+    }
+  ],
+  "dialogues": [
+    {
+      "id": "DL_MILLER_ROOT",
+      "speaker": "NPC_MILLER",
+      "text": "My hands have been numb since the harvest week.",
+      "options": [
+        {
+          "id": "ask_symptoms",
+          "text": "Tell me what you are feeling.",
+          "requires_flags": [],
+          "sets_flags": ["heard_symptoms_miller"],
+          "next_node": "DL_MILLER_SYMPTOMS",
+          "reports_symptom": "SYM_NUMBNESS"
+        },
+        {
+          "id": "ask_store",
+          "text": "Where do you keep the grain?",
+          "requires_flags": [],
+          "sets_flags": ["asked_about_store"],
+          "next_node": "DL_MILLER_STORE",
+          "reports_symptom": null
+        },
+        {
+          "id": "leave",
+          "text": "I will come back later.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": "grinding_grain"
+    },
+    {
+      "id": "DL_MILLER_SYMPTOMS",
+      "speaker": "NPC_MILLER",
+      "text": "Numbness, like the fingers belong to someone else.",
+      "options": [
+        {
+          "id": "ok",
+          "text": "Thank you. I will look into it.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": null
+    },
+    {
+      "id": "DL_MILLER_STORE",
+      "speaker": "NPC_MILLER",
+      "text": "The store is damp. It has been damp for years.",
+      "options": [
+        {
+          "id": "ok",
+          "text": "I will take a look.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": null
+    },
+    {
+      "id": "DL_KEEPER_ROOT",
+      "speaker": "NPC_KEEPER",
+      "text": "Two households in one week. I write them all down.",
+      "options": [
+        {
+          "id": "ask_symptoms",
+          "text": "What have you written down?",
+          "requires_flags": [],
+          "sets_flags": ["heard_symptoms_keeper"],
+          "next_node": "DL_KEEPER_SYMPTOMS",
+          "reports_symptom": "SYM_RASH"
+        },
+        {
+          "id": "ask_journal",
+          "text": "May I read the journal?",
+          "requires_flags": [],
+          "sets_flags": ["journal_offered"],
+          "next_node": "DL_KEEPER_JOURNAL",
+          "reports_symptom": null
+        },
+        {
+          "id": "leave",
+          "text": "See you around.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": "reading_registers"
+    },
+    {
+      "id": "DL_KEEPER_SYMPTOMS",
+      "speaker": "NPC_KEEPER",
+      "text": "A pale rash, on the arms of the people who work the mill.",
+      "options": [
+        {
+          "id": "ok",
+          "text": "That is worth writing down.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": null
+    },
+    {
+      "id": "DL_KEEPER_JOURNAL",
+      "speaker": "NPC_KEEPER",
+      "text": "It is on the desk. Read it and tell me what you make of it.",
+      "options": [
+        {
+          "id": "ok",
+          "text": "I will read it now.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": null
+    }
+  ],
+  "endings": [
+    {
+      "id": "END_CURE",
+      "title": "The cause is found",
+      "text": "The store is emptied and the sickness stops with it.",
+      "priority": 0,
+      "requires_flags": ["cure_administered", "hypothesis_verified"],
+      "requires_all_of": true,
+      "requires_absent_flags": [],
+      "requires_symptoms": ["SYM_NUMBNESS"],
+      "requires_causes": ["CAUSE_MOULD"]
+    },
+    {
+      "id": "END_SILENCE",
+      "title": "Nothing is done",
+      "text": "The village keeps its routines and the sickness keeps its pace.",
+      "priority": 9,
+      "requires_flags": [],
+      "requires_all_of": false,
+      "requires_absent_flags": ["cure_administered"],
+      "requires_symptoms": [],
+      "requires_causes": []
+    }
+  ],
+  "lighting": [
+    { "id": "LGT_DAWN_EARLY", "start_tick": 0, "end_tick": 18, "rgb": [40, 50, 90], "opacity": 0.55, "palette_id": "night" },
+    { "id": "LGT_DAWN", "start_tick": 18, "end_tick": 26, "rgb": [255, 170, 110], "opacity": 0.25, "palette_id": "dawn" },
+    { "id": "LGT_MORNING", "start_tick": 26, "end_tick": 38, "rgb": [255, 214, 170], "opacity": 0.08, "palette_id": "day" },
+    { "id": "LGT_DAY", "start_tick": 38, "end_tick": 66, "rgb": [255, 255, 255], "opacity": 0.0, "palette_id": "day" },
+    { "id": "LGT_AFTERNOON", "start_tick": 66, "end_tick": 76, "rgb": [255, 226, 180], "opacity": 0.06, "palette_id": "day" },
+    { "id": "LGT_DUSK", "start_tick": 76, "end_tick": 82, "rgb": [255, 150, 110], "opacity": 0.28, "palette_id": "dusk" },
+    { "id": "LGT_NIGHT", "start_tick": 82, "end_tick": 96, "rgb": [40, 50, 90], "opacity": 0.55, "palette_id": "night" }
+  ],
+  "rumors": [
+    {
+      "id": "RUM_DAMP_STORE",
+      "text": "They say the mill store has never once been dry.",
+      "npc_id": "NPC_KEEPER",
+      "min_tick": 10,
+      "max_tick": 200,
+      "sets_flags": ["heard_rumour_damp_store"]
+    },
+    {
+      "id": "RUM_HANDS_GONE",
+      "text": "The miller cannot feel his own hands on cold mornings.",
+      "npc_id": "NPC_MILLER",
+      "min_tick": 30,
+      "max_tick": 150,
+      "sets_flags": ["heard_rumour_hands_gone"]
+    }
+  ]
+}

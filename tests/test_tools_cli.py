@@ -82,21 +82,27 @@ def test_simulate_cli_reports_invalid_ranges(
 def test_content_validate_exits_successfully(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The validation stub succeeds and points at the phase that implements it."""
+    """The validation CLI validates the content and reports the outcome.
+
+    The authored content of the project carries a deliberately pending
+    premise plate, so the CLI reports it as a warning and still succeeds:
+    the phase F2a CI stays green while the design decision is open.
+    """
     exit_code = validate.main([])
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "PLAN.md F2" in captured.out
+    assert "content.validate" in captured.out
 
 
-def test_content_generate_exits_successfully(
+def test_content_generate_dry_run_exits_successfully(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The generation stub succeeds and points at the phase that implements it."""
-    exit_code = generate.main(["--all"])
+    """The generation CLI reports what it would do without calling the API."""
+    exit_code = generate.main(["--all", "--dry-run"])
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "PLAN.md F2" in captured.out
+    assert "dry run" in captured.out
+    assert "rumors" in captured.out
 
 
 def test_export_web_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:

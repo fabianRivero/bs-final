@@ -157,6 +157,37 @@ godot --path game/
 The playable client reads `build/game_content.json`. Until that artefact is
 generated (planned in F3), the Godot side is a placeholder.
 
+### Regenerate the AI content
+
+The build-time pipeline turns the prompt templates and the authored content
+into validated JSON under `content/generated/`. It needs an API key; without
+one it refuses to run and writes nothing.
+
+```bash
+export OPENAI_API_KEY="sk-..."        # or ANTHROPIC_API_KEY
+export ALDERMERE_LLM_MODEL="gpt-4o-mini"   # optional, this is the default
+
+uv run python -m content.generate --all            # the four targets
+uv run python -m content.generate --only rumors    # a single target
+uv run python -m content.generate --all --seed 20260514   # reproducible run
+uv run python -m content.generate --all --dry-run  # show what it would do
+```
+
+Two properties are guaranteed by the pipeline and asserted by the test suite:
+
+- **Reproducible.** The seed, the model, the temperature and the prompt take
+  part in the request, so the same seed over the same authored content
+  produces byte-identical files. The seed is also part of the cache key, so a
+  different seed never reuses a cached answer.
+- **Free to re-run.** Answers are cached on disk under `.cache/llm/`, keyed by
+  a digest of the request. Regenerating without changing anything makes no
+  API call at all.
+
+Every written file is recorded in `content/generated/manifest.json` together
+with the prompt, the model, the seed and the SHA-256 of the input and the
+output, so `content.validate` can prove that the committed content is exactly
+what the pipeline produced.
+
 ### Windows notes
 
 `make` is not available by default on Windows, and the `Makefile` is not a
@@ -199,6 +230,9 @@ final-project-aldermere/
 │   ├── base/              # Hand-authored content JSON (premise, zones, npcs, events, ...)
 │   ├── generated/         # LLM-generated content, versioned and committed
 │   ├── prompts/           # Plain-text prompt templates for the build-time pipeline
+│   ├── schema.py          # Pydantic models for the whole content document
+│   ├── generated_schema.py# Narrower models: what the LLM is allowed to write
+│   ├── llm.py             # Abstracted LLM client with an on-disk cache
 │   ├── validate.py        # CLI: validate authored and generated content
 │   └── generate.py        # CLI: run the build-time LLM content pipeline
 ├── tools/                 # Command line tools that drive the project
@@ -211,6 +245,12 @@ final-project-aldermere/
 │   ├── test_schedule.py   # NPC routines, availability and schedule validation
 │   ├── test_lighting.py   # The seven lighting phases cover the day without gaps
 │   ├── test_world.py      # WorldSim: advance, invalid actions, determinism
+│   ├── test_schema.py     # Content schema validation and its failure modes
+│   ├── test_content_consistency.py # Cross references between content collections
+│   ├── test_llm.py        # LLM client, provider selection and cache behaviour
+│   ├── test_generate.py   # The build-time pipeline and its reproducibility
+│   ├── test_validate.py   # The validator CLI and the manifest checks
+│   ├── test_vocabulary.py # Generated content cannot mention out-of-scope features
 │   ├── test_determinism.py# The same input sequence always yields the same state
 │   ├── test_tools_cli.py  # Contract tests for the command line entry points
 │   └── fixtures/          # Sample JSON fixtures used by the test suite
