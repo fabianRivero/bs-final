@@ -42,6 +42,7 @@ from content.schema import (
     Npc,
     ObjectiveKind,
     Premise,
+    ResourceSpec,
     Rumor,
     ScheduleEntry,
     Source,
@@ -49,9 +50,13 @@ from content.schema import (
     WorldContent,
     Zone,
 )
+from core.time import total_ticks
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "content" / "world.json"
 BASE_PREMISE_PATH = Path(__file__).parent.parent / "content" / "base" / "premise.json"
+
+#: First tick outside the playable cycle, used by the range validators.
+OUT_OF_RANGE_TICK = total_ticks() + 1
 
 
 @pytest.fixture
@@ -273,13 +278,13 @@ def test_valid_symptom_is_accepted() -> None:
 
 def test_symptom_rejects_out_of_range_tick() -> None:
     """An observation tick outside the cycle is rejected."""
-    with pytest.raises(ValidationError, match=r"observed_at_tick must be within \[0, 288\]"):
+    with pytest.raises(ValidationError, match=r"observed_at_tick must be within"):
         Symptom.model_validate(
             {
                 "id": "SYM_FEVER",
                 "label": "Fever",
                 "description": "High temperature.",
-                "observed_at_tick": 289,
+                "observed_at_tick": OUT_OF_RANGE_TICK,
             }
         )
 
@@ -299,14 +304,14 @@ def test_source_requires_a_known_kind() -> None:
 
 def test_source_rejects_out_of_range_readable_tick() -> None:
     """A readability tick outside the cycle is rejected."""
-    with pytest.raises(ValidationError, match=r"readable_ticks must be within \[0, 288\]"):
+    with pytest.raises(ValidationError, match=r"readable_ticks must be within"):
         Source.model_validate(
             {
                 "id": "SRC_BOOK",
                 "kind": "book",
                 "title": "A book",
                 "location": "On a shelf.",
-                "readable_ticks": [300],
+                "readable_ticks": [OUT_OF_RANGE_TICK],
             }
         )
 
@@ -519,12 +524,12 @@ def test_npc_rejects_tile_out_of_range() -> None:
 
 def test_event_rejects_out_of_range_activation_tick() -> None:
     """An event cannot fire outside the cycle."""
-    with pytest.raises(ValidationError, match=r"activation_tick must be within \[0, 288\]"):
+    with pytest.raises(ValidationError, match=r"activation_tick must be within"):
         Event.model_validate(
             {
                 "id": "EV_X",
                 "name": "X",
-                "activation_tick": 300,
+                "activation_tick": OUT_OF_RANGE_TICK,
             }
         )
 
@@ -535,10 +540,10 @@ def test_event_accepts_the_closing_tick() -> None:
         {
             "id": "EV_X",
             "name": "X",
-            "activation_tick": 288,
+            "activation_tick": total_ticks(),
         }
     )
-    assert event.activation_tick == 288
+    assert event.activation_tick == total_ticks()
 
 
 def test_event_rejects_a_malformed_precondition() -> None:
@@ -602,7 +607,7 @@ def test_secondary_mission_without_deadline_is_accepted() -> None:
 
 def test_mission_rejects_out_of_range_deadline() -> None:
     """A deadline outside the cycle is rejected."""
-    with pytest.raises(ValidationError, match=r"deadline_tick must be within \[0, 288\]"):
+    with pytest.raises(ValidationError, match=r"deadline_tick must be within"):
         Mission.model_validate(
             {
                 "id": "MS_MAIN",
@@ -610,7 +615,7 @@ def test_mission_rejects_out_of_range_deadline() -> None:
                 "kind": "main",
                 "giver_npc": "NPC_KEEPER",
                 "steps": [],
-                "deadline_tick": 300,
+                "deadline_tick": OUT_OF_RANGE_TICK,
             }
         )
 
@@ -793,15 +798,95 @@ def test_rumor_rejects_an_inverted_window() -> None:
 
 def test_rumor_rejects_out_of_range_tick() -> None:
     """A rumour window cannot leave the cycle."""
-    with pytest.raises(ValidationError, match=r"min_tick must be within \[0, 288\]"):
+    with pytest.raises(ValidationError, match=r"min_tick must be within"):
         Rumor.model_validate(
             {
                 "id": "RUM_X",
                 "text": "Something people say.",
                 "npc_id": "NPC_KEEPER",
-                "min_tick": 300,
+                "min_tick": OUT_OF_RANGE_TICK,
             }
         )
+
+
+# ----------------------------------------------------------------------
+# Resources
+# ----------------------------------------------------------------------
+
+
+def test_resource_spec_accepts_a_valid_definition() -> None:
+    """A provision is described by its stock, its cost and its threshold."""
+    resource = ResourceSpec.model_validate(
+        {
+            "id": "RES_FOOD",
+            "label": "Food",
+            "initial": 10,
+            "per_action": 1,
+            "critical_at": 3,
+        }
+    )
+    assert resource.id == "RES_FOOD"
+    assert resource.initial == 10
+    assert resource.per_action == 1
+    assert resource.critical_at == 3
+
+
+@pytest.mark.parametrize("field", ["initial", "per_action", "critical_at"])
+def test_resource_spec_rejects_negative_amounts(field: str) -> None:
+    """A negative quantity is not a stock the town can hold."""
+    document = {
+        "id": "RES_FOOD",
+        "label": "Food",
+        "initial": 10,
+        "per_action": 1,
+        "critical_at": 3,
+    }
+    document[field] = -1
+    with pytest.raises(ValidationError, match="must be >= 0"):
+        ResourceSpec.model_validate(document)
+
+
+def test_resource_spec_rejects_an_unreachable_threshold() -> None:
+    """A threshold above the initial amount would start in crisis."""
+    with pytest.raises(ValidationError, match="critical_at"):
+        ResourceSpec.model_validate(
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 9,
+            }
+        )
+
+
+def test_resource_spec_rejects_unknown_fields() -> None:
+    """A typo in a resource definition is an error, not a silent loss."""
+    with pytest.raises(ValidationError):
+        ResourceSpec.model_validate(
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 10,
+                "per_action": 1,
+                "critical_at": 3,
+                "per_tick": 1,
+            }
+        )
+
+
+def test_world_content_rejects_duplicated_resource_ids(valid_world: WorldContent) -> None:
+    """Two provisions cannot share an id."""
+    document = valid_world.model_dump(mode="json")
+    document["resources"].append(dict(document["resources"][0]))
+    with pytest.raises(ValidationError, match="duplicated resources ids"):
+        WorldContent.model_validate(document)
+
+
+def test_world_content_accepts_resources(valid_world: WorldContent) -> None:
+    """The root document carries the provisions of the town."""
+    assert len(valid_world.resources) == 2
+    assert valid_world.resources[0].id == "RES_FOOD"
 
 
 # ----------------------------------------------------------------------

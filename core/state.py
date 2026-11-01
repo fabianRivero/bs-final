@@ -1,13 +1,13 @@
 """The derived state of the world.
 
-The world is never stored. It is a **pure function** of two inputs:
+The world is never stored. It is a **pure function** of three inputs:
 
-    WorldState = derive(tick, decisions)
+    WorldState = derive(tick, decisions, resources)
 
-``tick`` says *when* it is; ``decisions`` says *what the player chose*.
-Everything else -- which flags are active, which symptoms the player knows,
-which NPCs have already been spoken to -- is recomputed from those two
-inputs on every call.
+``tick`` says *when* it is; ``decisions`` says *what the player chose``;
+``resources`` says *what the town has left*. Everything else -- which flags
+are active, which symptoms the player knows, which NPCs have already been
+spoken to -- is recomputed from those inputs on every call.
 
 This module owns:
 
@@ -22,19 +22,31 @@ Flag vocabulary
 Flags are named strings. The derivation sets them from the decisions that
 have been taken:
 
-===========================  ==========================================
+============================  ==========================================
 Flag                         Raised by
-===========================  ==========================================
+============================  ==========================================
 ``decided:<kind>``           any decision of that kind
 ``talked:<target>``          a ``"talk"`` decision targeting that NPC
 ``examined:<target>``        an ``"examine"`` decision targeting that object
 ``knows:symptom:<id>``       a ``"report_symptom"`` decision
 ``visited:<zone>``           a ``"move"`` decision into that zone
-===========================  ==========================================
+============================  ==========================================
 
 A decision may also raise an explicit flag through its payload, using the
 ``"sets_flags"`` key, which is how content-driven flags enter the world
 without the core needing to know what they mean.
+
+Resources are an input, not an output
+-------------------------------------
+The provisions of the town are **consumed by the simulator**, not derived by
+it. :func:`derive` receives them and copies them into the snapshot, but it
+never spends them: a derivation that mutated the provisions would break the
+purity of the world and would make a save file impossible to reproduce.
+
+The consequence is that the flags still depend **only** on the decisions.
+The resource state is carried along, but it raises no flag and never
+influences the vocabulary: the story of what the player did and the story of
+what the town has left are two separate threads.
 """
 
 from __future__ import annotations
@@ -42,7 +54,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from core.time import TOTAL_TICKS, to_datetime
+from core.resources import ResourceState, empty_state
+from core.time import to_datetime, total_ticks
 
 __all__ = [
     "Decision",
@@ -114,6 +127,9 @@ class WorldState:
         minute: Minute within the hour.
         decisions: Decisions taken so far, in chronological order.
         flags: Active flags, derived from the decisions.
+        resources: Provisions of the town at this point of the run. The
+            snapshot carries them as they were given to :func:`derive`: the
+            derivation never spends them.
     """
 
     tick: int
@@ -122,6 +138,7 @@ class WorldState:
     minute: int
     decisions: tuple[Decision, ...]
     flags: frozenset[str]
+    resources: ResourceState = field(default_factory=empty_state)
 
     def has_flag(self, name: str) -> bool:
         """Check whether a flag is active.
@@ -176,8 +193,9 @@ def _validate_tick(tick: int) -> int:
         raise TypeError(f"tick must be an int, got {type(tick).__name__}")
     if tick < 0:
         raise ValueError(f"tick must be >= 0, got {tick}")
-    if tick > TOTAL_TICKS:
-        raise ValueError(f"tick must be <= {TOTAL_TICKS}, got {tick}")
+    limit = total_ticks()
+    if tick > limit:
+        raise ValueError(f"tick must be <= {limit}, got {tick}")
     return tick
 
 
@@ -212,16 +230,32 @@ def _flag_for_decision(decision: Decision) -> tuple[str, ...]:
     return tuple(flags)
 
 
-def derive(tick: int, decisions: Sequence[Decision]) -> WorldState:
-    """Derive the world state from a tick and the decisions taken.
+def derive(
+    tick: int,
+    decisions: Sequence[Decision],
+    resources: ResourceState | None = None,
+) -> WorldState:
+    """Derive the world state from a tick, the decisions taken and the stock.
 
     The function is **pure**: it does not mutate its arguments, does not read
     the system clock, does not touch the filesystem and does not use random
     numbers. The same inputs always produce an equal state.
 
+    The provisions of the town are an **input**, not an output. The
+    derivation carries them into the snapshot but never spends them: the
+    simulator is the only component allowed to consume resources, because
+    consumption depends on *what the player did*, and the derivation only
+    knows *what the player did* in the shape of the decisions.
+
+    The flags still depend on the decisions alone. The resource state never
+    raises a flag and never changes the flag vocabulary, so widening the
+    cycle or depleting the stores cannot alter the story the flags tell.
+
     Args:
-        tick: Tick the state describes, in ``[0, TOTAL_TICKS]``.
+        tick: Tick the state describes, in ``[0, total_ticks()]``.
         decisions: Decisions taken so far, in chronological order.
+        resources: Provisions of the town. When omitted, a neutral state
+            that tracks nothing is used.
 
     Returns:
         The derived world state.
@@ -253,4 +287,5 @@ def derive(tick: int, decisions: Sequence[Decision]) -> WorldState:
         minute=minute,
         decisions=ordered,
         flags=frozenset(flags),
+        resources=resources if resources is not None else empty_state(),
     )

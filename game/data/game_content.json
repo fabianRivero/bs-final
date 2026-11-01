@@ -608,6 +608,22 @@
       "palette_id": "night"
     }
   ],
+  "resources": [
+    {
+      "id": "RES_FOOD",
+      "label": "Food",
+      "initial": 40,
+      "per_action": 1,
+      "critical_at": 10
+    },
+    {
+      "id": "RES_MEDICINE",
+      "label": "Medicine",
+      "initial": 12,
+      "per_action": 2,
+      "critical_at": 4
+    }
+  ],
   "rumors": [
     {
       "id": "RUM_DAMP_STORE",
@@ -633,6 +649,7 @@
   "clock": {
     "minutes_per_tick": 15,
     "ticks_per_day": 96,
-    "total_ticks": 288
+    "cycle_days": 5,
+    "total_ticks": 480
   }
 }

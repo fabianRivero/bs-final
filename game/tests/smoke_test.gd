@@ -55,6 +55,7 @@ func _init() -> void:
 	_test_derive()
 	_test_lighting()
 	_test_content()
+	_test_resources()
 
 	print("")
 	print("=== Result: %d passed, %d failed ===" % [_passed, _failed])
@@ -144,7 +145,7 @@ func _test_clock() -> void:
 	_check_equal("tick 29 is Day 1 07:15", _game_state.format_clock(29), "Day 1 07:15")
 	_check_equal("tick 95 is Day 1 23:45", _game_state.format_clock(95), "Day 1 23:45")
 	_check_equal("tick 96 is Day 2 00:00", _game_state.format_clock(96), "Day 2 00:00")
-	_check_equal("tick 288 closes at Day 4 00:00", _game_state.format_clock(288), "Day 4 00:00")
+	_check_equal("tick 480 closes at Day 6 00:00", _game_state.format_clock(480), "Day 6 00:00")
 
 	var instant_28: Dictionary = _game_state.to_datetime(28)
 	_check_equal("tick 28 hour", instant_28["hour"], 7)
@@ -160,10 +161,10 @@ func _test_clock() -> void:
 	_check_equal("tick 96 hour", instant_96["hour"], 0)
 	_check_equal("tick 96 minute", instant_96["minute"], 0)
 
-	var instant_288: Dictionary = _game_state.to_datetime(288)
-	_check_equal("tick 288 day", instant_288["day"], 4)
-	_check_equal("tick 288 hour", instant_288["hour"], 0)
-	_check_equal("tick 288 minute", instant_288["minute"], 0)
+	var instant_480: Dictionary = _game_state.to_datetime(480)
+	_check_equal("tick 480 day", instant_480["day"], 6)
+	_check_equal("tick 480 hour", instant_480["hour"], 0)
+	_check_equal("tick 480 minute", instant_480["minute"], 0)
 
 	# Four consecutive ticks share the same (day, hour) pair: the minute is
 	# what makes the triple lossless.
@@ -248,7 +249,7 @@ func _test_derive() -> void:
 	# The flags depend only on the decisions, never on the tick.
 	var decisions: Array = [talk, examine, move, report]
 	var at_zero: Dictionary = _game_state.derive(0, decisions)
-	var at_end: Dictionary = _game_state.derive(288, decisions)
+	var at_end: Dictionary = _game_state.derive(480, decisions)
 	_check_equal(
 		"the flags do not depend on the tick",
 		at_zero["flags"],
@@ -283,10 +284,10 @@ func _test_derive() -> void:
 			)
 
 	# The clock is bounded: advancing past the closing tick is refused.
-	_game_state.tick = 288
+	_game_state.tick = 480
 	var refused: bool = false
 	_game_state.advance("talk", "NPC_MILLER")
-	if _game_state.tick == 288:
+	if _game_state.tick == 480:
 		refused = true
 	_check("the clock refuses to advance past the closing tick", refused)
 	_game_state.tick = 0
@@ -402,7 +403,11 @@ func _test_content() -> void:
 		var clock: Dictionary = _content_db.content["clock"]
 		_check_equal("the clock holds the minutes per tick", clock["minutes_per_tick"], 15)
 		_check_equal("the clock holds the ticks per day", clock["ticks_per_day"], 96)
-		_check_equal("the clock holds the total ticks", clock["total_ticks"], 288)
+		_check_equal("the clock holds the cycle days", clock["cycle_days"], 5)
+		_check_equal("the clock holds the total ticks", clock["total_ticks"], 480)
+
+	_check("the document holds the resources", _content_db.content.has("resources"))
+	_check_equal("the document holds two resources", _content_db.resources.size(), 2)
 
 	var zone_id: String = _content_db.first_zone_id()
 	_check("a zone can be selected", not zone_id.is_empty())
@@ -429,6 +434,87 @@ func _test_content() -> void:
 		"the npc moves when its schedule changes",
 		npc_tile != npc_tile_evening,
 		"both tiles are %s" % str(npc_tile)
+	)
+
+#endregion
+
+
+#region Resources
+
+## Check the GDScript mirror of the provisions of the town.
+##
+## The amounts are the ones the exported content document declares, and the
+## consumption mirrors `core.resources.consume`: the amounts are clamped to
+## zero instead of going negative.
+func _test_resources() -> void:
+	print("")
+	print("-- resources --")
+
+	_check_equal("the autoload holds two resources", _game_state.resources.size(), 2)
+
+	var food_amount: int = _game_state.resource_amount("RES_FOOD")
+	_check_equal("the food starts at its initial amount", food_amount, 40)
+	_check_equal(
+		"the medicine starts at its initial amount",
+		_game_state.resource_amount("RES_MEDICINE"),
+		12
+	)
+	_check("the town can afford an action at the start", _game_state.can_afford_action())
+	_check("no resource is in crisis at the start", _game_state.resource_crisis().is_empty())
+
+	# Consuming an action draws on the stores.
+	_game_state.consume_action_resources()
+	_check_equal(
+		"an action costs one unit of food",
+		_game_state.resource_amount("RES_FOOD"),
+		39
+	)
+	_check_equal(
+		"an action costs two units of medicine",
+		_game_state.resource_amount("RES_MEDICINE"),
+		10
+	)
+
+	# The amounts are clamped to zero: a resource never goes negative.
+	for _i in range(30):
+		_game_state.consume_action_resources()
+	_check(
+		"the food never goes negative",
+		_game_state.resource_amount("RES_FOOD") >= 0
+	)
+	_check(
+		"the medicine never goes negative",
+		_game_state.resource_amount("RES_MEDICINE") >= 0
+	)
+	_check(
+		"the medicine ran out",
+		_game_state.resource_amount("RES_MEDICINE") == 0
+	)
+	_check(
+		"a depleted resource is in crisis",
+		_game_state.is_resource_critical("RES_MEDICINE")
+	)
+	_check(
+		"the crisis lists the exhausted resource",
+		_game_state.resource_crisis().has("RES_MEDICINE")
+	)
+	_check(
+		"the town can no longer afford an action",
+		not _game_state.can_afford_action()
+	)
+
+	# A resource the town never stocked is absent, not empty.
+	_check_equal("an untracked resource holds nothing", _game_state.resource_amount("RES_NONE"), 0)
+	_check(
+		"an untracked resource is not in crisis",
+		not _game_state.is_resource_critical("RES_NONE")
+	)
+
+	_game_state.reset()
+	_check_equal(
+		"the reset restores the initial amount",
+		_game_state.resource_amount("RES_FOOD"),
+		40
 	)
 
 #endregion

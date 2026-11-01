@@ -52,8 +52,11 @@ const MINUTES_PER_TICK: int = 15
 ## Number of ticks in a full in-game day. Mirrors `core.time.TICKS_PER_DAY`.
 const TICKS_PER_DAY: int = 96
 
+## Number of days of the playable cycle. Mirrors `core.time.CYCLE_DAYS`.
+const CYCLE_DAYS: int = 5
+
 ## Number of ticks in the full playable cycle. Mirrors `core.time.TOTAL_TICKS`.
-const TOTAL_TICKS: int = 288
+const TOTAL_TICKS: int = 480
 
 ## Current tick of the run, in `[0, TOTAL_TICKS]`.
 var tick: int = 0
@@ -63,6 +66,16 @@ var tick: int = 0
 ## Each entry is a dictionary with the keys `kind`, `target`, `tick` and
 ## `payload`, mirroring `core.state.Decision`.
 var decisions: Array[Dictionary] = []
+
+## Provisions of the town, keyed by resource id.
+##
+## Mirrors `core.resources.ResourceState`. The amounts are the ones the
+## simulation core decided on: this autoload only mirrors the consumption so
+## that the HUD can show them.
+var _resources: Dictionary = {}
+
+## Whether the provisions were already read from the content document.
+var _resources_loaded: bool = false
 
 ## Cached derived state, recomputed on every mutation.
 var _state: Dictionary = {}
@@ -224,6 +237,133 @@ func symptoms_known() -> PackedStringArray:
 #endregion
 
 
+#region Resources (mirror of core/resources.py)
+
+## Return the provisions of the town.
+##
+## The provisions are read from the content document **lazily**: the content
+## database may not be loaded yet when this autoload enters the tree, so the
+## lookup happens on the first access instead of in `_ready()`.
+##
+## @return The resource documents, keyed by resource id.
+var resources: Dictionary:
+	get:
+		_ensure_resources()
+		return _resources
+
+
+## Read the provisions from the content document, once.
+func _ensure_resources() -> void:
+	if _resources_loaded:
+		return
+	_resources_loaded = true
+	var content_db: Node = AutoloadRef.content_db(self)
+	if content_db == null:
+		return
+	load_resources(content_db.resources)
+
+
+## Load the provisions of the town from the exported content document.
+##
+## The amounts are the ones the content declares: this is a mirror of the
+## simulation core, which remains the source of truth. The autoload only
+## needs them to display the provisions and to mirror their consumption.
+##
+## @param specs The `resources` array of the exported content document.
+func load_resources(specs: Array) -> void:
+	_resources.clear()
+	_resources_loaded = true
+	for raw in specs:
+		if not (raw is Dictionary):
+			continue
+		var resource_id: String = String(raw.get("id", ""))
+		if resource_id.is_empty():
+			continue
+		_resources[resource_id] = {
+			"id": resource_id,
+			"label": String(raw.get("label", resource_id)),
+			"initial": int(raw.get("initial", 0)),
+			"per_action": int(raw.get("per_action", 0)),
+			"critical_at": int(raw.get("critical_at", 0)),
+			"amount": int(raw.get("initial", 0)),
+		}
+
+
+## Return the amount held of a resource.
+##
+## @param resource_id Id of the resource.
+## @return The amount held, or 0 when the resource is not tracked.
+func resource_amount(resource_id: String) -> int:
+	if not _resources.has(resource_id):
+		return 0
+	return int(_resources[resource_id].get("amount", 0))
+
+
+## Check whether a resource is in a critical state.
+##
+## A resource is critical when its amount fell strictly below the
+## `critical_at` threshold of its specification, exactly like
+## `core.resources.ResourceState.is_critical`.
+##
+## @param resource_id Id of the resource.
+## @return `true` when the resource is in crisis.
+func is_resource_critical(resource_id: String) -> bool:
+	if not _resources.has(resource_id):
+		return false
+	var spec: Dictionary = _resources[resource_id]
+	return resource_amount(resource_id) < int(spec.get("critical_at", 0))
+
+
+## Return the ids of the resources whose exhaustion puts the town in crisis.
+##
+## @return The resource ids in crisis, sorted.
+func resource_crisis() -> PackedStringArray:
+	_ensure_resources()
+	var crisis: PackedStringArray = PackedStringArray()
+	for resource_id in _resources.keys():
+		if is_resource_critical(String(resource_id)):
+			crisis.append(String(resource_id))
+	crisis.sort()
+	return crisis
+
+
+## Check whether the town can pay for one more action.
+##
+## Mirrors `core.resources.can_afford`.
+##
+## @return `true` when every tracked resource covers the cost of one action.
+func can_afford_action() -> bool:
+	_ensure_resources()
+	for resource_id in _resources.keys():
+		var spec: Dictionary = _resources[resource_id]
+		if resource_amount(String(resource_id)) < int(spec.get("per_action", 0)):
+			return false
+	return true
+
+
+## Consume the provisions of one action.
+##
+## Mirrors `core.resources.consume`: the amounts are clamped to zero, so a
+## resource that cannot cover its cost ends up depleted rather than negative.
+##
+## @return The ids of the resources that ran out.
+func consume_action_resources() -> PackedStringArray:
+	_ensure_resources()
+	var depleted: PackedStringArray = PackedStringArray()
+	for resource_id in _resources.keys():
+		var key: String = String(resource_id)
+		var spec: Dictionary = _resources[key]
+		var remaining: int = resource_amount(key) - int(spec.get("per_action", 0))
+		spec["amount"] = maxi(0, remaining)
+		_resources[key] = spec
+		if int(spec["amount"]) <= 0:
+			depleted.append(key)
+	depleted.sort()
+	return depleted
+
+#endregion
+
+
 #region Mutation
 
 ## Record a decision without moving the clock.
@@ -253,6 +393,12 @@ func apply_decision(kind: String, target: String = "", payload: Dictionary = {})
 ## the closing tick of the cycle is refused, exactly like
 ## `core.time.ClockOverflowError`.
 ##
+## The provisions of the town are consumed **per action**, not per tick:
+## waiting burns time without drawing on the stores, but every real action
+## pays its cost. An action the town cannot afford is refused and consumes
+## neither the tick nor the provisions, mirroring
+## `core.world.InsufficientResourcesError`.
+##
 ## @param kind Kind of action, e.g. `"talk"`.
 ## @param target Id of the NPC or object the action refers to.
 ## @param payload Extra data of the decision.
@@ -262,7 +408,12 @@ func advance(kind: String, target: String = "", payload: Dictionary = {}) -> Dic
 		push_warning("cannot advance past the cycle end (tick %d)" % TOTAL_TICKS)
 		return _state
 
+	if not can_afford_action():
+		push_warning("the town cannot afford this action")
+		return _state
+
 	apply_decision(kind, target, payload)
+	consume_action_resources()
 	tick += 1
 	_rederive()
 	tick_changed.emit(tick, _state)
@@ -293,6 +444,11 @@ func advance_steps(steps: int = 1) -> Dictionary:
 func reset() -> void:
 	tick = 0
 	decisions.clear()
+	_ensure_resources()
+	for resource_id in _resources.keys():
+		var spec: Dictionary = _resources[resource_id]
+		spec["amount"] = int(spec.get("initial", 0))
+		_resources[resource_id] = spec
 	_rederive()
 	decisions_changed.emit(decisions)
 	tick_changed.emit(tick, _state)

@@ -12,7 +12,9 @@ core and the Godot presentation layer. It carries:
 * the **lighting table**, copied from :mod:`core.lighting`, so Godot applies
   the phases Python decided on;
 * the **clock constants**, copied from :mod:`core.time`, so Godot formats the
-  clock exactly like Python does.
+  clock exactly like Python does;
+* the **resources**, copied from the content document, so Godot can display
+  the provisions of the town and mirror their consumption.
 
 Usage:
     python -m tools.export_web
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from core.lighting import LIGHTING_TABLE
-from core.time import MINUTES_PER_TICK, TICKS_PER_DAY, TOTAL_TICKS
+from core.time import CYCLE_DAYS, MINUTES_PER_TICK, TICKS_PER_DAY, TOTAL_TICKS
 
 __all__ = [
     "GAME_CONTENT_PATH",
@@ -105,6 +107,8 @@ def build_document(source: dict[str, Any] | None = None) -> dict[str, Any]:
 
     The document is the content itself plus the two tables that Python owns and
     Godot must not re-invent: the lighting phases and the clock constants.
+    The resources of the town are part of the content document and travel
+    with it, so Godot can display them and mirror their consumption.
 
     Args:
         source: The content document to export. When omitted, the synthetic
@@ -116,13 +120,37 @@ def build_document(source: dict[str, Any] | None = None) -> dict[str, Any]:
     content: dict[str, Any] = dict(source) if source is not None else _load_source_content()
 
     content["lighting"] = _lighting_document()
+    content["resources"] = _resources_document(content.get("resources", []))
     content["clock"] = {
         "minutes_per_tick": MINUTES_PER_TICK,
         "ticks_per_day": TICKS_PER_DAY,
+        "cycle_days": CYCLE_DAYS,
         "total_ticks": TOTAL_TICKS,
     }
     content.setdefault("content_version", "0.0.0")
     return content
+
+
+def _resources_document(raw_resources: object) -> list[dict[str, Any]]:
+    """Build the resources section of the exported document.
+
+    The resources are declared in the content document, so they are copied
+    verbatim. The section is normalised to a list of plain objects, and it is
+    always present, even when the town stocks nothing: Godot then knows the
+    shape of the contract instead of guessing it.
+
+    Args:
+        raw_resources: The ``resources`` field of the content document.
+
+    Returns:
+        The resource documents, in the order they were declared.
+
+    Raises:
+        ValueError: If the field is not a list.
+    """
+    if not isinstance(raw_resources, list):
+        raise ValueError("the 'resources' field must be a list")
+    return [dict(raw) for raw in raw_resources]
 
 
 def validate_document(document: dict[str, Any]) -> None:
@@ -224,8 +252,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  source:     {arguments.source}")
     print(f"  content:    {written}")
     print(f"  lighting:   {len(document['lighting'])} phases")
+    print(f"  resources:  {len(document['resources'])} provisions")
     print(
-        f"  clock:      {MINUTES_PER_TICK} min/tick, {TICKS_PER_DAY} ticks/day, {TOTAL_TICKS} ticks"
+        f"  clock:      {MINUTES_PER_TICK} min/tick, {TICKS_PER_DAY} ticks/day, "
+        f"{CYCLE_DAYS} days, {TOTAL_TICKS} ticks"
     )
 
     # The HTML5 export and its presets are still part of the later phases.

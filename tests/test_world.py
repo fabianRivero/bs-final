@@ -4,6 +4,10 @@
 below check that it loads the content, derives the state, consumes exactly one
 tick per valid action, rejects invalid actions **without** consuming a tick
 and that the same sequence of actions always produces the same world.
+
+The provisions of the town follow the same rule as the tick: an action the
+town cannot afford raises :class:`InsufficientResourcesError` and consumes
+**neither** a tick nor a resource.
 """
 
 from __future__ import annotations
@@ -14,10 +18,16 @@ from pathlib import Path
 import pytest
 
 from core.lighting import LightState
+from core.resources import ResourceSpec
 from core.schedule import NpcState
 from core.state import Decision, WorldState
 from core.time import TOTAL_TICKS, ClockOverflowError, to_tick
-from core.world import InvalidActionError, WorldContentError, WorldSim
+from core.world import (
+    InsufficientResourcesError,
+    InvalidActionError,
+    WorldContentError,
+    WorldSim,
+)
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "minimal_world.json"
 
@@ -29,6 +39,9 @@ REPORT = Decision(
     tick=0,
     payload={"symptom": "SYM_FEVER"},
 )
+
+#: A resource the town can afford for a couple of actions only.
+SCARCE = ResourceSpec(id="RES_FOOD", label="Food", initial=2, per_action=1, critical_at=1)
 
 
 @pytest.fixture
@@ -520,4 +533,281 @@ def test_load_rejects_a_zone_with_a_non_string_name(tmp_path: Path) -> None:
     path = tmp_path / "world.json"
     path.write_text(json.dumps({"zones": [{"id": "ZONE_X", "name": 7}]}), encoding="utf-8")
     with pytest.raises(WorldContentError, match="name must be a string"):
+        WorldSim.load(path)
+
+
+# ----------------------------------------------------------------------
+# Resources
+# ----------------------------------------------------------------------
+
+
+def _write_resource_document(tmp_path: Path, resources: list[dict[str, object]]) -> Path:
+    """Write a content document that declares the given resources.
+
+    The document also declares one NPC, so that the tests can perform a real
+    action against it.
+
+    Args:
+        tmp_path: Directory to write the document into.
+        resources: Resource documents to serialise.
+
+    Returns:
+        The path of the written document.
+    """
+    path = tmp_path / "world.json"
+    document = {
+        "npcs": [
+            {
+                "id": "NPC_MARTA",
+                "name": "Marta",
+                "schedule": [
+                    {
+                        "start_tick": 0,
+                        "end_tick": 96,
+                        "zone": "ZONE_PORT",
+                        "tile": [12, 7],
+                        "activity": "mending_nets",
+                        "interactable": True,
+                    }
+                ],
+            }
+        ],
+        "resources": resources,
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_a_world_without_resources_has_neutral_provisions(sim: WorldSim) -> None:
+    """A world that declares no provisions tracks nothing."""
+    assert sim.resources().amounts == {}
+    assert sim.resource_specs() == ()
+    assert sim.crisis() == ()
+
+
+def test_advance_consumes_the_resources_of_the_action(tmp_path: Path) -> None:
+    """Every action draws on the provisions of the town."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 2}],
+    )
+    sim = WorldSim.load(path)
+
+    assert sim.resources().amount("RES_FOOD") == 5
+    sim.advance(TALK_MARTA)
+    assert sim.resources().amount("RES_FOOD") == 4
+    sim.advance(TALK_MARTA)
+    assert sim.resources().amount("RES_FOOD") == 3
+
+
+def test_advance_consumes_the_resources_of_every_kind_of_action(tmp_path: Path) -> None:
+    """Moving, talking, examining and reporting all cost the same."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 10, "per_action": 2, "critical_at": 2}],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    assert sim.resources().amount("RES_FOOD") == 8
+    sim.advance(Decision(kind="move", target="ZONE_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FOOD") == 6
+    sim.advance(Decision(kind="examine", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FOOD") == 4
+    sim.advance(REPORT)
+    assert sim.resources().amount("RES_FOOD") == 2
+
+
+def test_an_unaffordable_action_raises_and_consumes_no_tick(tmp_path: Path) -> None:
+    """The town cannot act on provisions that do not exist."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 1, "per_action": 1, "critical_at": 0}],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    assert sim.tick() == 1
+    assert sim.resources().amount("RES_FOOD") == 0
+
+    with pytest.raises(InsufficientResourcesError):
+        sim.advance(TALK_MARTA)
+
+    assert sim.tick() == 1
+    assert sim.resources().amount("RES_FOOD") == 0
+    assert len(sim.decisions()) == 1
+
+
+def test_an_unaffordable_action_is_an_invalid_action(tmp_path: Path) -> None:
+    """The error inherits from the base class of the rejected actions."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 1, "per_action": 1, "critical_at": 0}],
+    )
+    sim = WorldSim.load(path)
+    sim.advance(TALK_MARTA)
+
+    with pytest.raises(InvalidActionError):
+        sim.advance(TALK_MARTA)
+
+
+def test_the_provisions_are_part_of_the_derived_state(tmp_path: Path) -> None:
+    """The snapshot carries the provisions as they were given to it."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 3, "per_action": 1, "critical_at": 1}],
+    )
+    sim = WorldSim.load(path)
+    sim.advance(TALK_MARTA)
+
+    assert sim.state().resources.amount("RES_FOOD") == 2
+    assert sim.state().resources == sim.resources()
+
+
+def test_the_town_enters_crisis_when_a_resource_runs_low(tmp_path: Path) -> None:
+    """A resource below its threshold puts the town in crisis."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 2, "per_action": 1, "critical_at": 1}],
+    )
+    sim = WorldSim.load(path)
+
+    assert sim.crisis() == ()
+    sim.advance(TALK_MARTA)
+    assert sim.crisis() == ()
+    sim.advance(TALK_MARTA)
+    assert sim.crisis() == ("RES_FOOD",)
+
+
+def test_apply_does_not_consume_the_provisions(tmp_path: Path) -> None:
+    """Events apply their effect without spending the stores."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 1}],
+    )
+    sim = WorldSim.load(path)
+
+    sim.apply(Decision(kind="event", target="EV_X", tick=7, payload={}))
+    assert sim.resources().amount("RES_FOOD") == 5
+    assert sim.tick() == 0
+
+
+def test_advance_to_does_not_consume_the_provisions(tmp_path: Path) -> None:
+    """Waiting burns time without drawing on the stores."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 1}],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance_to(10)
+    assert sim.tick() == 10
+    assert sim.resources().amount("RES_FOOD") == 5
+
+
+def test_the_same_sequence_produces_identical_provisions(tmp_path: Path) -> None:
+    """Two runs of the same action sequence leave the same stores behind."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 4, "per_action": 1, "critical_at": 1}],
+    )
+    first = WorldSim.load(path)
+    second = WorldSim.load(path)
+
+    for action in (TALK_MARTA, TALK_MARTA, REPORT):
+        first.advance(action)
+        second.advance(action)
+
+    assert first.resources() == second.resources()
+
+
+def test_load_reads_the_resources_of_the_document(tmp_path: Path) -> None:
+    """The specifications of the provisions are loaded with the world."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 2}],
+    )
+    sim = WorldSim.load(path)
+
+    assert len(sim.resource_specs()) == 1
+    spec = sim.resource_specs()[0]
+    assert spec.id == "RES_FOOD"
+    assert spec.label == "Food"
+    assert spec.initial == 5
+    assert spec.per_action == 1
+    assert spec.critical_at == 2
+
+
+def test_load_rejects_duplicated_resource_ids(tmp_path: Path) -> None:
+    """Two resources cannot share an id."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 2},
+            {"id": "RES_FOOD", "label": "Other", "initial": 5, "per_action": 1, "critical_at": 2},
+        ],
+    )
+    with pytest.raises(WorldContentError, match="duplicated resource id"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resources_field_that_is_not_a_list(tmp_path: Path) -> None:
+    """The ``resources`` field must be a list."""
+    path = tmp_path / "world.json"
+    path.write_text(json.dumps({"resources": {}}), encoding="utf-8")
+    with pytest.raises(WorldContentError, match="'resources' must be a list"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resource_without_an_id(tmp_path: Path) -> None:
+    """Every resource needs a stable identifier."""
+    path = _write_resource_document(tmp_path, [{"label": "Food"}])
+    with pytest.raises(WorldContentError, match="non-empty string id"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resource_with_a_non_integer_amount(tmp_path: Path) -> None:
+    """The amounts of a resource must be integers."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": "5", "per_action": 1, "critical_at": 2}],
+    )
+    with pytest.raises(WorldContentError, match="initial must be an integer"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resource_with_a_negative_amount(tmp_path: Path) -> None:
+    """A negative stock is not a state the simulation can represent."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": -5, "per_action": 1, "critical_at": 2}],
+    )
+    with pytest.raises(WorldContentError, match="initial must be >= 0"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resource_with_an_unreachable_threshold(tmp_path: Path) -> None:
+    """A threshold above the initial amount would start in crisis."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 9}],
+    )
+    with pytest.raises(WorldContentError, match="critical_at"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_resources_that_are_not_objects(tmp_path: Path) -> None:
+    """Every resource must be an object."""
+    path = _write_resource_document(tmp_path, ["RES_FOOD"])
+    with pytest.raises(WorldContentError, match="every resource must be an object"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_resource_with_a_non_string_label(tmp_path: Path) -> None:
+    """The label of a resource must be a string."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": 7, "initial": 5, "per_action": 1, "critical_at": 2}],
+    )
+    with pytest.raises(WorldContentError, match="label must be a string"):
         WorldSim.load(path)

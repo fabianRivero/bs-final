@@ -2,17 +2,23 @@
 
 :class:`WorldSim` is the object the presentation layer talks to. It is the
 only place where mutable state lives, and that state is deliberately minimal:
-the current **tick** and the list of **decisions** taken so far. Everything
-else -- flags, NPC positions, lighting -- is derived on demand.
+the current **tick**, the list of **decisions** taken so far and the
+**provisions** of the town. Everything else -- flags, NPC positions,
+lighting -- is derived on demand.
 
 That design is what makes save/load trivial: a save file only needs
-``{tick, decisions}``, because the world was never stored in the first place.
+``{tick, decisions, resources}``, because the world was never stored in the
+first place.
 
 The golden rule of the project holds here: Python decides, Godot only
 presents and captures input. ``advance(action)`` is the single entry point
 that mutates the world, and it only does so when the action is valid. An
 invalid action raises :class:`InvalidActionError` and **does not consume a
 tick**, which matches the rule that bumping into a wall is not an action.
+
+An action the town cannot afford raises :class:`InsufficientResourcesError`
+and consumes **neither** a tick nor a resource: the player is not allowed to
+act on provisions that do not exist.
 """
 
 from __future__ import annotations
@@ -24,11 +30,20 @@ from pathlib import Path
 from typing import Any
 
 from core.lighting import LightState, light_state_at
+from core.resources import (
+    ResourceSpec,
+    ResourceState,
+    can_afford,
+    consume,
+    derive_crisis,
+    initial_state,
+)
 from core.schedule import Npc, NpcState, ScheduleEntry, npc_state, validate_schedule
 from core.state import Decision, WorldState, derive
 from core.time import advance
 
 __all__ = [
+    "InsufficientResourcesError",
     "InvalidActionError",
     "WorldContentError",
     "WorldSim",
@@ -45,11 +60,20 @@ class WorldContentError(ValueError):
 
 
 class InvalidActionError(ValueError):
-    """Raised when an action cannot be performed at the current tick.
+    """Base class of the errors raised when an action cannot be performed.
 
     The action is rejected *before* the clock moves, so the tick is not
     consumed. Typical causes are talking to an NPC that is not interactable
     at that moment or targeting an unknown NPC.
+    """
+
+
+class InsufficientResourcesError(InvalidActionError):
+    """Raised when the town cannot pay for an action.
+
+    Like :class:`InvalidActionError`, the action is rejected **before** the
+    clock moves, so neither the tick nor the provisions are consumed. The
+    town cannot act on stores that do not exist.
     """
 
 
@@ -191,33 +215,87 @@ def _parse_zone(raw: object) -> Zone:
     return Zone(id=zone_id, name=name)
 
 
-class WorldSim:
-    """The running simulation: a tick, a list of decisions, and derivations.
+def _parse_resource_spec(raw: object) -> ResourceSpec:
+    """Parse a resource specification from the content document.
 
-    The simulator stores only the tick and the decisions. Flags, NPC states
-    and lighting are recomputed on demand by :meth:`state`, :meth:`npc_states`
-    and :meth:`light`, which keeps the "derived state" invariant intact.
+    Args:
+        raw: Raw object read from the document.
+
+    Returns:
+        The parsed specification.
+
+    Raises:
+        WorldContentError: If the specification is malformed.
+    """
+    if not isinstance(raw, dict):
+        raise WorldContentError("every resource must be an object")
+    resource_id = raw.get("id")
+    if not isinstance(resource_id, str) or not resource_id:
+        raise WorldContentError("every resource must have a non-empty string id")
+    label = raw.get("label", resource_id)
+    if not isinstance(label, str):
+        raise WorldContentError(f"resource {resource_id}: label must be a string")
+
+    amounts: dict[str, int] = {}
+    for field_name in ("initial", "per_action", "critical_at"):
+        value = raw.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise WorldContentError(f"resource {resource_id}: {field_name} must be an integer")
+        amounts[field_name] = value
+
+    try:
+        return ResourceSpec(
+            id=resource_id,
+            label=label,
+            initial=amounts["initial"],
+            per_action=amounts["per_action"],
+            critical_at=amounts["critical_at"],
+        )
+    except ValueError as error:
+        raise WorldContentError(str(error)) from error
+
+
+class WorldSim:
+    """The running simulation: a tick, a list of decisions and the provisions.
+
+    The simulator stores only the tick, the decisions and the resource
+    state. Flags, NPC states and lighting are recomputed on demand by
+    :meth:`state`, :meth:`npc_states` and :meth:`light`, which keeps the
+    "derived state" invariant intact.
 
     Attributes:
         npcs: NPCs of the world, keyed by id.
         zones: Zones of the world, keyed by id.
     """
 
-    def __init__(self, npcs: Sequence[Npc], zones: Sequence[Zone]) -> None:
+    def __init__(
+        self,
+        npcs: Sequence[Npc],
+        zones: Sequence[Zone],
+        resource_specs: Sequence[ResourceSpec] = (),
+    ) -> None:
         """Build a simulation from already parsed content.
 
         Args:
             npcs: NPCs of the world.
             zones: Zones of the world.
+            resource_specs: Provisions of the town. The simulation starts
+                with every resource at its ``initial`` amount.
         """
         self._npcs: dict[str, Npc] = {npc.id: npc for npc in npcs}
         self._zones: dict[str, Zone] = {zone.id: zone for zone in zones}
+        self._resource_specs: tuple[ResourceSpec, ...] = tuple(resource_specs)
         self._tick = 0
         self._decisions: list[Decision] = []
+        self._resources: ResourceState = initial_state(self._resource_specs)
 
     @classmethod
     def load(cls, path: str | Path) -> WorldSim:
         """Load the content of a world from a JSON document.
+
+        The optional ``resources`` field of the document declares the
+        provisions of the town. When it is absent, the world has no
+        provisions at all and no action costs anything.
 
         Args:
             path: Path of the JSON document.
@@ -231,14 +309,23 @@ class WorldSim:
         document = _read_document(path)
         raw_npcs = document.get("npcs", [])
         raw_zones = document.get("zones", [])
+        raw_resources = document.get("resources", [])
         if not isinstance(raw_npcs, list):
             raise WorldContentError("'npcs' must be a list")
         if not isinstance(raw_zones, list):
             raise WorldContentError("'zones' must be a list")
+        if not isinstance(raw_resources, list):
+            raise WorldContentError("'resources' must be a list")
 
         npcs = [_parse_npc(raw) for raw in raw_npcs]
         zones = [_parse_zone(raw) for raw in raw_zones]
-        return cls(npcs=npcs, zones=zones)
+        resources = [_parse_resource_spec(raw) for raw in raw_resources]
+        seen: set[str] = set()
+        for spec in resources:
+            if spec.id in seen:
+                raise WorldContentError(f"duplicated resource id: {spec.id}")
+            seen.add(spec.id)
+        return cls(npcs=npcs, zones=zones, resource_specs=resources)
 
     # ------------------------------------------------------------------
     # Queries
@@ -260,13 +347,37 @@ class WorldSim:
         """
         return tuple(self._decisions)
 
+    def resources(self) -> ResourceState:
+        """Return the provisions of the town.
+
+        Returns:
+            The current resource state.
+        """
+        return self._resources
+
+    def resource_specs(self) -> tuple[ResourceSpec, ...]:
+        """Return the specifications of the provisions of the town.
+
+        Returns:
+            The resource specs, in the order they were declared.
+        """
+        return self._resource_specs
+
+    def crisis(self) -> tuple[str, ...]:
+        """Return the resources whose exhaustion puts the town in crisis.
+
+        Returns:
+            The ids of the resources in crisis, sorted.
+        """
+        return derive_crisis(self._resources, self._resource_specs)
+
     def state(self) -> WorldState:
         """Return the derived state of the world.
 
         Returns:
             The world state at the current tick.
         """
-        return derive(self._tick, self._decisions)
+        return derive(self._tick, self._decisions, self._resources)
 
     def npc_states(self) -> dict[str, NpcState]:
         """Return the state of every NPC at the current tick.
@@ -317,11 +428,18 @@ class WorldSim:
     # ------------------------------------------------------------------
 
     def advance(self, action: Decision) -> WorldState:
-        """Record a decision and move the clock forward by one tick.
+        """Record a decision, spend the provisions and move the clock forward.
 
-        The action is validated **before** the clock moves. An invalid action
+        The action is validated **before** anything moves. An invalid action
         raises :class:`InvalidActionError` and leaves the tick untouched, so
-        a rejected input never costs time.
+        a rejected input never costs time. An action the town cannot afford
+        raises :class:`InsufficientResourcesError` and leaves **both** the
+        tick and the provisions untouched: the player cannot act on stores
+        that do not exist.
+
+        The resources are consumed **per action**, not per tick. Waiting
+        advances the clock without drawing on the provisions, but every real
+        action pays its cost.
 
         Args:
             action: Decision taken by the player. Its ``tick`` field is
@@ -334,9 +452,12 @@ class WorldSim:
         Raises:
             InvalidActionError: If the action is not valid at the current
                 tick.
+            InsufficientResourcesError: If the town cannot pay for the
+                action.
             ClockOverflowError: If the cycle has already been closed.
         """
         self._validate_action(action)
+        self._validate_resources()
         new_tick = advance(self._tick)
         decision = Decision(
             kind=action.kind,
@@ -346,6 +467,7 @@ class WorldSim:
         )
         self._decisions.append(decision)
         self._tick = new_tick
+        self._resources = consume(self._resources, self._resource_specs)
         return self.state()
 
     def _validate_action(self, action: Decision) -> None:
@@ -370,6 +492,24 @@ class WorldSim:
                 raise InvalidActionError(
                     f"{action.target} is not interactable at tick {self._tick}"
                 )
+
+    def _validate_resources(self) -> None:
+        """Check that the town can pay for one more action.
+
+        Raises:
+            InsufficientResourcesError: If a resource does not hold enough
+                to cover the cost of a single action.
+        """
+        if can_afford(self._resources, self._resource_specs):
+            return
+        exhausted = tuple(
+            spec.id
+            for spec in self._resource_specs
+            if self._resources.amount(spec.id) < spec.per_action
+        )
+        raise InsufficientResourcesError(
+            f"the town cannot afford this action: {', '.join(exhausted)}"
+        )
 
     def apply(self, decision: Decision) -> WorldState:
         """Record a decision without moving the clock.

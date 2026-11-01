@@ -1,4 +1,4 @@
-# Aldermere
+﻿# Aldermere
 
 [![CI](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml)
 
@@ -30,10 +30,15 @@ fighting: the core verb is **asking questions**, and the progression system is
 Time is the protagonist. The world advances in discrete **ticks of 15
 minutes** of in-game time, and every single valid action — walking one tile,
 talking to a neighbour, reading a book, examining the harbour — costs exactly
-one tick. A full day is 96 ticks and the entire playable cycle is **3 days =
-288 ticks**, which maps to a real playtime of roughly 15 to 25 minutes. The
+one tick. A full day is 96 ticks and the entire playable cycle is **5 days =
+480 ticks**, which maps to a real playtime of roughly 25 to 40 minutes. The
 tick is discrete and strictly monotonic: it never moves backwards, and there
 is no explicit "wait" button, because waiting *is* doing something else.
+
+The length of the cycle is **data, not code**: it is the number of days the
+cycle lasts, and the clock derives every bound from it. Widening the cycle to
+fifteen days is a one-line change (`CYCLE_DAYS = 15` in `core/time.py`) that
+leaves the daily pattern of the schedules and the lighting untouched.
 
 The town lives on a schedule. Every NPC in Aldermere — the baker, the
 fisher, the harbourmaster, the widow of the previous doctor — follows a daily
@@ -142,7 +147,7 @@ and the same threshold is a blocking gate in CI.
 ### Run the simulation CLI
 
 ```bash
-uv run python -m tools.simulate --from 0 --to 288
+uv run python -m tools.simulate --from 0 --to 480
 ```
 
 It prints the day/hour table for every tick of the cycle and is the reference
@@ -223,7 +228,7 @@ that works in any shell:
 | `make lint` | `uv run ruff check .` then `uv run ruff format --check .` |
 | `make format` | `uv run ruff format .` |
 | `make validate` | `uv run python -m content.validate` |
-| `make sim` | `uv run python -m tools.simulate --from 0 --to 288` |
+| `make sim` | `uv run python -m tools.simulate --from 0 --to 480` |
 | `make generate` | `uv run python -m content.generate --all` |
 | `make export` | `uv run python -m tools.export_web` |
 | `make clean` | `uv run python -c "import shutil,pathlib; [shutil.rmtree(p, ignore_errors=True) for p in ['build','.pytest_cache']]"` |
@@ -242,8 +247,9 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 ```
 final-project-aldermere/
 ├── core/                  # Simulation core: the single source of truth for world state
-│   ├── time.py            # Deterministic tick arithmetic, clock formatting, deadlines
-│   ├── state.py           # Derived world state: WorldState = derive(tick, decisions)
+│   ├── time.py            # Deterministic tick arithmetic, clock formatting, deadlines, cycle length
+│   ├── resources.py       # The provisions of the town: finite stock spent by every action
+│   ├── state.py           # Derived world state: WorldState = derive(tick, decisions, resources)
 │   ├── schedule.py        # NPC daily routines: where each villager is at a given tick
 │   ├── lighting.py        # Day/night cycle: phase, tint colour and overlay opacity
 │   ├── world.py           # Composition root: WorldSim, the player-facing API
@@ -268,7 +274,9 @@ final-project-aldermere/
 │   ├── data/              # game_content.json, exported from Python
 │   └── tests/             # Headless GDScript test suites
 ├── tests/                 # pytest suite for the simulation core and the tooling
-│   ├── test_time.py       # Exhaustive tick arithmetic tests (all 288 ticks)
+│   ├── test_time.py       # Exhaustive tick arithmetic tests (all 480 ticks)
+│   ├── test_cycle.py      # The configurable cycle length and the fifteen-day cycle
+│   ├── test_resources.py  # The provisions of the town: consumption, crisis, purity
 │   ├── test_state.py      # Derived state, flag vocabulary and purity guarantees
 │   ├── test_schedule.py   # NPC routines, availability and schedule validation
 │   ├── test_lighting.py   # The seven lighting phases cover the day without gaps
@@ -306,7 +314,7 @@ final-project-aldermere/
 ## Main Features
 
 - **Deterministic time engine.** A monotonic tick counter of 15-minute steps,
-  96 ticks per day and 288 ticks per cycle, with pure conversion helpers
+  96 ticks per day and 480 ticks per cycle, with pure conversion helpers
   between ticks and calendar instants, inclusive deadline comparisons and an
   explicit `ClockOverflowError` instead of silent wrap-around.
 - **Derived world state.** The world is never stored. `WorldState` is a pure

@@ -21,9 +21,10 @@ Each element of "rumors" must be an object with exactly these keys:
   "npc_id"      string, the id of an NPC who spreads the rumour. It must be
                 one of the NPC ids listed in the context.
   "min_tick"    integer, the earliest absolute tick at which the rumour can be
-                heard. Must be within [0, 288].
+                 heard. Must be within [0, 480].
   "max_tick"    integer, the latest absolute tick at which the rumour can be
-                heard. Must be within [0, 288] and not lower than min_tick.
+                 heard. Must be within [0, 480] and not lower than min_tick.
+
   "sets_flags"  array of strings, zero or more narrative flags raised when the
                 rumour is heard. Use lower_snake_case names such as
                 "heard_rumour_harbour_closed". The list may be empty.

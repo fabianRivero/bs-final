@@ -19,7 +19,7 @@ validate:
 	uv run python -m content.validate
 
 sim:
-	uv run python -m tools.simulate --from 0 --to 288
+	uv run python -m tools.simulate --from 0 --to 480
 
 generate:
 	uv run python -m content.generate --all

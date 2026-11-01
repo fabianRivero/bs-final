@@ -15,7 +15,7 @@ import pytest
 
 from content import generate, validate
 from core.lighting import LIGHTING_TABLE
-from core.time import MINUTES_PER_TICK, TICKS_PER_DAY, TOTAL_TICKS
+from core.time import CYCLE_DAYS, MINUTES_PER_TICK, TICKS_PER_DAY, TOTAL_TICKS
 from tools import export_web, parity_check, simulate
 
 
@@ -39,15 +39,15 @@ def test_simulate_record_content() -> None:
 
 
 def test_simulate_full_cycle() -> None:
-    """The whole cycle is 289 instants, from tick 0 to the closing tick."""
-    records = simulate.simulate(0, 288)
-    assert len(records) == 289
-    assert records[-1]["clock"] == "Day 4 00:00"
+    """The whole cycle is 481 instants, from tick 0 to the closing tick."""
+    records = simulate.simulate(0, TOTAL_TICKS)
+    assert len(records) == TOTAL_TICKS + 1
+    assert records[-1]["clock"] == f"Day {CYCLE_DAYS + 1} 00:00"
 
 
 @pytest.mark.parametrize(
     ("start", "end"),
-    [(-1, 10), (0, 289), (10, 5)],
+    [(-1, 10), (0, TOTAL_TICKS + 1), (10, 5)],
 )
 def test_simulate_rejects_invalid_ranges(start: int, end: int) -> None:
     """Ranges outside the cycle, or inverted, are rejected."""
@@ -156,6 +156,21 @@ def test_export_web_carries_the_clock_constants(tmp_path: Path) -> None:
     assert document["clock"]["minutes_per_tick"] == MINUTES_PER_TICK
     assert document["clock"]["ticks_per_day"] == TICKS_PER_DAY
     assert document["clock"]["total_ticks"] == TOTAL_TICKS
+    assert document["clock"]["cycle_days"] == CYCLE_DAYS
+
+
+def test_export_web_carries_the_resources(tmp_path: Path) -> None:
+    """The exported contract carries the provisions of the town."""
+    destination = tmp_path / "game_content.json"
+    export_web.main(["--game-content", str(destination)])
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    resources = document["resources"]
+    assert len(resources) == 2
+    assert resources[0]["id"] == "RES_FOOD"
+    assert resources[0]["initial"] == 40
+    assert resources[0]["per_action"] == 1
+    assert resources[0]["critical_at"] == 10
 
 
 def test_export_web_is_deterministic(tmp_path: Path) -> None:
@@ -179,6 +194,14 @@ def test_export_web_rejects_an_invalid_document() -> None:
     document["zones"] = [{"id": "ZN_BROKEN"}]
     with pytest.raises(ValueError):
         export_web.validate_document(document)
+
+
+def test_export_web_rejects_a_resources_field_that_is_not_a_list() -> None:
+    """The ``resources`` field of the content must be a list."""
+    source = export_web.build_document()
+    source["resources"] = {"id": "RES_FOOD"}
+    with pytest.raises(ValueError, match="'resources' field must be a list"):
+        export_web.build_document(source)
 
 
 def test_parity_check_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:

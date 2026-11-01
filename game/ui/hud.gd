@@ -17,7 +17,7 @@ class_name Hud
 signal help_toggled(is_open: bool)
 
 ## Number of ticks in the full playable cycle. Mirrors `core.time.TOTAL_TICKS`.
-const TOTAL_TICKS: int = 288
+const TOTAL_TICKS: int = 480
 
 ## The label showing the clock, e.g. `"Day 1 07:15"`.
 var clock_label: Label = null
@@ -33,6 +33,9 @@ var cycle_bar: ProgressBar = null
 
 ## The label showing the number of decisions taken.
 var decision_label: Label = null
+
+## The row showing the provisions of the town.
+var resource_row: HBoxContainer = null
 
 ## The panel holding the help text.
 var help_panel: PanelContainer = null
@@ -52,6 +55,7 @@ func _ready() -> void:
 	if game_state != null:
 		game_state.tick_changed.connect(_on_tick_changed)
 		game_state.decisions_changed.connect(_on_decisions_changed)
+		_rebuild_resource_row()
 		_on_tick_changed(int(game_state.tick), game_state.state())
 		_on_decisions_changed(game_state.decisions)
 	else:
@@ -89,7 +93,7 @@ func _build_hud() -> void:
 	phase_label.name = "PhaseLabel"
 	row.add_child(phase_label)
 
-	tick_label = _make_label("tick 0 / 288", 13)
+	tick_label = _make_label("tick 0 / 480", 13)
 	tick_label.name = "TickLabel"
 	row.add_child(tick_label)
 
@@ -112,6 +116,19 @@ func _build_hud() -> void:
 	cycle_bar.show_percentage = false
 	cycle_bar.custom_minimum_size = Vector2(320, 10)
 	bar_panel.add_child(cycle_bar)
+
+	# The provisions of the town: one label per resource, in a single row.
+	var resource_panel: PanelContainer = PanelContainer.new()
+	resource_panel.name = "ResourcePanel"
+	resource_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	resource_panel.position = Vector2(12, 84)
+	resource_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(resource_panel)
+
+	resource_row = HBoxContainer.new()
+	resource_row.name = "ResourceRow"
+	resource_row.add_theme_constant_override("separation", 14)
+	resource_panel.add_child(resource_row)
 
 	help_panel = PanelContainer.new()
 	help_panel.name = "HelpPanel"
@@ -168,6 +185,57 @@ func _on_tick_changed(tick_index: int, _state: Dictionary) -> void:
 				phase_label.text = lighting.phase_name(phase)
 			else:
 				phase_label.text = lighting.current_phase_id
+	_refresh_resources()
+
+
+## Build one label per resource of the town.
+##
+## The HUD never computes an amount itself: it reads the provisions the
+## simulation core published.
+func _rebuild_resource_row() -> void:
+	if resource_row == null:
+		return
+	for child in resource_row.get_children():
+		child.queue_free()
+
+	var game_state: Node = AutoloadRef.game_state(self)
+	if game_state == null:
+		return
+
+	var ids: Array = game_state.resources.keys()
+	ids.sort()
+	for resource_id in ids:
+		var spec: Dictionary = game_state.resources[resource_id]
+		var label: Label = _make_label("%s 0" % String(spec.get("label", resource_id)), 13)
+		label.name = "Resource_%s" % String(resource_id)
+		resource_row.add_child(label)
+
+
+## Refresh the amount shown by every resource label.
+##
+## A resource in crisis is shown in red, so the player sees the town running
+## out without reading a number.
+func _refresh_resources() -> void:
+	if resource_row == null:
+		return
+	var game_state: Node = AutoloadRef.game_state(self)
+	if game_state == null:
+		return
+
+	for child in resource_row.get_children():
+		if not (child is Label):
+			continue
+		var label: Label = child
+		var resource_id: String = label.name.replace("Resource_", "")
+		var spec: Dictionary = game_state.resources.get(resource_id, {})
+		if spec.is_empty():
+			continue
+		var amount: int = int(game_state.resource_amount(resource_id))
+		label.text = "%s %d" % [String(spec.get("label", resource_id)), amount]
+		if bool(game_state.is_resource_critical(resource_id)):
+			label.add_theme_color_override("font_color", Color(0.92, 0.42, 0.38))
+		else:
+			label.add_theme_color_override("font_color", Color(0.95, 0.93, 0.85))
 
 
 ## Update the decision counter.

@@ -22,7 +22,7 @@ from typing import Self
 from pydantic import Field, field_validator, model_validator
 
 from content.schema import StrictModel
-from core.time import TOTAL_TICKS
+from core.time import total_ticks
 
 __all__ = [
     "DialogueVariant",
@@ -78,7 +78,7 @@ class GeneratedRumor(_GeneratedModel):
     text: str
     npc_id: str
     min_tick: int = 0
-    max_tick: int = TOTAL_TICKS
+    max_tick: int = total_ticks()
     sets_flags: tuple[str, ...] = ()
 
     @field_validator("min_tick", "max_tick")
@@ -97,8 +97,8 @@ class GeneratedRumor(_GeneratedModel):
             ValueError: If the tick is out of range.
         """
         field_name = getattr(info, "field_name", None) or "tick"
-        if not 0 <= value <= TOTAL_TICKS:
-            raise ValueError(f"rumor.{field_name} must be within [0, {TOTAL_TICKS}], got {value}")
+        if not 0 <= value <= total_ticks():
+            raise ValueError(f"rumor.{field_name} must be within [0, {total_ticks()}], got {value}")
         return value
 
     @model_validator(mode="after")

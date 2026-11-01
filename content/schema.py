@@ -47,6 +47,7 @@ Prefix         Entity
 ``END_``       Ending
 ``LGT_``       Lighting phase
 ``CAUSE_``     Cause
+``RES_``       Resource (provision of the town)
 =============  ======================================================
 
 Tick conventions
@@ -78,7 +79,7 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from core.time import TICKS_PER_DAY, TOTAL_TICKS
+from core.time import TICKS_PER_DAY, total_ticks
 
 __all__ = [
     "Cause",
@@ -96,6 +97,7 @@ __all__ = [
     "Npc",
     "ObjectiveKind",
     "Premise",
+    "ResourceSpec",
     "Rumor",
     "ScheduleEntry",
     "Source",
@@ -419,9 +421,9 @@ class Symptom(StrictModel):
         """
         if value is None:
             return None
-        if not 0 <= value <= TOTAL_TICKS:
+        if not 0 <= value <= total_ticks():
             raise ValueError(
-                f"symptom.observed_at_tick must be within [0, {TOTAL_TICKS}], got {value}"
+                f"symptom.observed_at_tick must be within [0, {total_ticks()}], got {value}"
             )
         return value
 
@@ -479,9 +481,9 @@ class Source(StrictModel):
             ValueError: If a tick is out of range.
         """
         for tick in value:
-            if not 0 <= tick <= TOTAL_TICKS:
+            if not 0 <= tick <= total_ticks():
                 raise ValueError(
-                    f"source.readable_ticks must be within [0, {TOTAL_TICKS}], got {tick}"
+                    f"source.readable_ticks must be within [0, {total_ticks()}], got {tick}"
                 )
         return value
 
@@ -803,9 +805,9 @@ class Event(StrictModel):
         Raises:
             ValueError: If the tick is out of range.
         """
-        if not 0 <= value <= TOTAL_TICKS:
+        if not 0 <= value <= total_ticks():
             raise ValueError(
-                f"event.activation_tick must be within [0, {TOTAL_TICKS}], got {value}"
+                f"event.activation_tick must be within [0, {total_ticks()}], got {value}"
             )
         return value
 
@@ -905,9 +907,9 @@ class Mission(StrictModel):
         """
         if value is None:
             return None
-        if not 0 <= value <= TOTAL_TICKS:
+        if not 0 <= value <= total_ticks():
             raise ValueError(
-                f"mission.deadline_tick must be within [0, {TOTAL_TICKS}], got {value}"
+                f"mission.deadline_tick must be within [0, {total_ticks()}], got {value}"
             )
         return value
 
@@ -1183,7 +1185,7 @@ class Rumor(StrictModel):
     text: str
     npc_id: str
     min_tick: int = 0
-    max_tick: int = TOTAL_TICKS
+    max_tick: int = total_ticks()
     sets_flags: tuple[str, ...] = ()
 
     @field_validator("min_tick", "max_tick")
@@ -1202,8 +1204,8 @@ class Rumor(StrictModel):
             ValueError: If the tick is out of range.
         """
         field_name = info.field_name or "rumor tick"
-        if not 0 <= value <= TOTAL_TICKS:
-            raise ValueError(f"rumor.{field_name} must be within [0, {TOTAL_TICKS}], got {value}")
+        if not 0 <= value <= total_ticks():
+            raise ValueError(f"rumor.{field_name} must be within [0, {total_ticks()}], got {value}")
         return value
 
     @model_validator(mode="after")
@@ -1220,6 +1222,72 @@ class Rumor(StrictModel):
             raise ValueError(
                 f"rumor {self.id}: min_tick {self.min_tick} must not be greater than "
                 f"max_tick {self.max_tick}"
+            )
+        return self
+
+
+class ResourceSpec(StrictModel):
+    """A provision of the town that the player spends by acting.
+
+    The provisions are the pressure of the second half of the game: every
+    action draws on a finite stock, and a stock that runs low puts the town
+    in crisis. The engine knows nothing about *what* is being stocked; it
+    only knows the amounts and the costs.
+
+    Attributes:
+        id: Identifier of the resource, e.g. ``"RES_FOOD"``.
+        label: Display name of the resource.
+        initial: Amount the town starts the cycle with. Must be at least 0.
+        per_action: Amount consumed by a single action. Must be at least 0.
+        critical_at: Amount at or below which the town suffers. A resource
+            is in crisis when its amount falls **strictly below** this
+            value.
+    """
+
+    id: str
+    label: str
+    initial: int
+    per_action: int
+    critical_at: int
+
+    @field_validator("initial", "per_action", "critical_at")
+    @classmethod
+    def _check_not_negative(cls, value: int, info: Any) -> int:
+        """Check that a quantity is not negative.
+
+        Args:
+            value: Quantity to check.
+            info: Validation context, used to name the offending field.
+
+        Returns:
+            The validated quantity.
+
+        Raises:
+            ValueError: If the quantity is negative.
+        """
+        field_name = info.field_name or "resource amount"
+        if value < 0:
+            raise ValueError(f"resource.{field_name} must be >= 0, got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_critical_threshold(self) -> Self:
+        """Check that the critical threshold is reachable.
+
+        A threshold above the initial amount would mean the resource is
+        already in crisis when the cycle starts, which is never what the
+        content means.
+
+        Returns:
+            The validated specification.
+
+        Raises:
+            ValueError: If ``critical_at`` is greater than ``initial``.
+        """
+        if self.critical_at > self.initial:
+            raise ValueError(
+                f"resource {self.id}: critical_at {self.critical_at} must not be greater "
+                f"than initial {self.initial}"
             )
         return self
 
@@ -1241,6 +1309,7 @@ class WorldContent(StrictModel):
         endings: Final endings of the story.
         lighting: Lighting phases of the daily cycle.
         rumors: Pieces of town talk.
+        resources: Provisions of the town that the player spends by acting.
         content_version: Version of the content document.
     """
 
@@ -1257,6 +1326,7 @@ class WorldContent(StrictModel):
     endings: tuple[Ending, ...] = ()
     lighting: tuple[LightingPhase, ...] = ()
     rumors: tuple[Rumor, ...] = ()
+    resources: tuple[ResourceSpec, ...] = ()
     content_version: str = "0.0.0"
 
     # ------------------------------------------------------------------
@@ -1286,6 +1356,7 @@ class WorldContent(StrictModel):
             ("endings", self.endings),
             ("lighting", self.lighting),
             ("rumors", self.rumors),
+            ("resources", self.resources),
         )
         for name, items in collections:
             duplicates = _duplicate_ids(items, name)

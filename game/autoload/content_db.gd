@@ -36,6 +36,9 @@ var _npcs: Dictionary = {}
 ## Lighting phases of the daily cycle, ordered by `start_tick`.
 var _lighting_phases: Array = []
 
+## Provisions of the town, in the order the content document declares them.
+var _resources: Array = []
+
 
 func _ready() -> void:
 	## Register the autoload and load the content as soon as it enters the
@@ -70,6 +73,14 @@ var lighting_phases: Array:
 		_ensure_loaded()
 		return _lighting_phases
 
+## Return the provisions of the town.
+##
+## @return The resource documents, in the order the content declares them.
+var resources: Array:
+	get:
+		_ensure_loaded()
+		return _resources
+
 #endregion
 
 
@@ -82,6 +93,7 @@ func load_content() -> bool:
 	_zones = {}
 	_npcs = {}
 	_lighting_phases = []
+	_resources = []
 	is_loaded = false
 
 	if not FileAccess.file_exists(CONTENT_PATH):
@@ -144,6 +156,11 @@ func _index_content() -> void:
 		func(a: Dictionary, b: Dictionary) -> bool:
 			return int(a.get("start_tick", 0)) < int(b.get("start_tick", 0))
 	)
+
+	_resources = []
+	for raw_resource in content.get("resources", []):
+		if raw_resource is Dictionary:
+			_resources.append(raw_resource)
 
 #endregion
 

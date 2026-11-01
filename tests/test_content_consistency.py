@@ -60,6 +60,53 @@ def test_fixture_is_complete(world: WorldContent) -> None:
     assert len(world.endings) == 2
     assert len(world.lighting) == 7
     assert len(world.rumors) == 2
+    assert len(world.resources) == 2
+
+
+def test_the_resources_of_the_fixture_are_sane(world: WorldContent) -> None:
+    """Every provision of the town has a reachable, non-negative stock.
+
+    A resource whose cost is zero would never run out, and a threshold above
+    the initial amount would start the cycle already in crisis. Neither is a
+    stock the design means.
+    """
+    for resource in world.resources:
+        assert resource.initial >= 0
+        assert resource.per_action >= 0
+        assert resource.critical_at <= resource.initial
+        assert resource.per_action > 0
+        assert resource.label
+
+
+def test_the_provisions_of_the_fixture_can_be_spent(world: WorldContent) -> None:
+    """The initial stock of every provision is enough to act a few times."""
+    for resource in world.resources:
+        assert resource.initial >= resource.per_action
+
+
+def test_the_resource_ids_are_unique(world: WorldContent) -> None:
+    """Two provisions cannot share an id."""
+    ids = [resource.id for resource in world.resources]
+    assert len(ids) == len(set(ids))
+
+
+def test_the_resources_of_the_fixture_build_a_core_state(world: WorldContent) -> None:
+    """The authored provisions are usable by the simulation core."""
+    from core.resources import ResourceSpec, derive_crisis, initial_state
+
+    specs = [
+        ResourceSpec(
+            id=resource.id,
+            label=resource.label,
+            initial=resource.initial,
+            per_action=resource.per_action,
+            critical_at=resource.critical_at,
+        )
+        for resource in world.resources
+    ]
+    state = initial_state(specs)
+    assert state.amount(specs[0].id) == specs[0].initial
+    assert derive_crisis(state, specs) == ()
 
 
 def test_every_npc_with_a_dialogue_root_has_that_dialogue(world: WorldContent) -> None:

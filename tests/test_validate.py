@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from content import validate as validator
+from core.time import TOTAL_TICKS
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "content" / "world.json"
 BASE_PREMISE_PATH = Path(__file__).parent.parent / "content" / "base" / "premise.json"
@@ -529,7 +530,7 @@ def test_the_validation_of_a_document_is_reported_with_the_field(
 ) -> None:
     """The message of a pydantic error names the field and the value."""
     document = json.loads(valid_base.joinpath("world.json").read_text(encoding="utf-8"))
-    document["events"][0]["activation_tick"] = 900
+    document["events"][0]["activation_tick"] = TOTAL_TICKS + 1
     valid_base.joinpath("world.json").write_text(json.dumps(document), encoding="utf-8")
     report = validator.ValidationReport()
     validator._validate_base(valid_base, report)

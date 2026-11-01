@@ -384,6 +384,22 @@
     { "id": "LGT_DUSK", "start_tick": 76, "end_tick": 82, "rgb": [255, 150, 110], "opacity": 0.28, "palette_id": "dusk" },
     { "id": "LGT_NIGHT", "start_tick": 82, "end_tick": 96, "rgb": [40, 50, 90], "opacity": 0.55, "palette_id": "night" }
   ],
+  "resources": [
+    {
+      "id": "RES_FOOD",
+      "label": "Food",
+      "initial": 40,
+      "per_action": 1,
+      "critical_at": 10
+    },
+    {
+      "id": "RES_MEDICINE",
+      "label": "Medicine",
+      "initial": 12,
+      "per_action": 2,
+      "critical_at": 4
+    }
+  ],
   "rumors": [
     {
       "id": "RUM_DAMP_STORE",

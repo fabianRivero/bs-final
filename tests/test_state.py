@@ -1,9 +1,9 @@
 """Tests for the derived world state.
 
 The derived state is the heart of the project invariant: the world is never
-stored, it is recomputed from ``(tick, decisions)``. The tests below pin down
-that ``derive`` is pure, deterministic and free of side effects, and that the
-flag vocabulary follows from the decisions alone.
+stored, it is recomputed from ``(tick, decisions, resources)``. The tests
+below pin down that ``derive`` is pure, deterministic and free of side
+effects, and that the flag vocabulary follows from the decisions alone.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import copy
 
 import pytest
 
+from core.resources import ResourceSpec, consume, empty_state, initial_state
 from core.state import Decision, WorldState, derive
 from core.time import TOTAL_TICKS
 
@@ -145,6 +146,13 @@ def test_decision_sets_flag_reports_explicit_flags() -> None:
     assert TALK.sets_flag("a") is False
 
 
+def test_decision_sets_flag_accepts_a_single_matching_flag() -> None:
+    """A ``sets_flags`` payload may be a single flag name."""
+    decision = Decision(kind="talk", target="NPC_MARTA", tick=1, payload={"sets_flags": "heard"})
+    assert decision.sets_flag("heard") is True
+    assert decision.sets_flag("other") is False
+
+
 def test_has_flag_reports_unknown_flags() -> None:
     """Unknown flags are simply absent."""
     state = derive(0, ())
@@ -203,7 +211,7 @@ def test_derive_rejects_out_of_range_ticks() -> None:
     """Ticks outside the playable cycle are rejected."""
     with pytest.raises(ValueError, match="tick must be >= 0"):
         derive(-1, ())
-    with pytest.raises(ValueError, match="tick must be <= 288"):
+    with pytest.raises(ValueError, match=rf"tick must be <= {TOTAL_TICKS}"):
         derive(TOTAL_TICKS + 1, ())
 
 
@@ -289,3 +297,95 @@ def test_derive_ignores_a_move_without_target() -> None:
     state = derive(1, (untargeted,))
     assert state.has_flag("decided:move")
     assert not state.has_flag("visited:")
+
+
+# ----------------------------------------------------------------------
+# Resources
+# ----------------------------------------------------------------------
+
+
+FOOD = ResourceSpec(id="RES_FOOD", label="Food", initial=3, per_action=1, critical_at=1)
+
+
+def test_derive_without_resources_uses_a_neutral_state() -> None:
+    """A derivation without provisions carries an empty state."""
+    state = derive(0, ())
+    assert dict(state.resources.amounts) == {}
+
+
+def test_derive_carries_the_resources_it_receives() -> None:
+    """The provisions are carried into the snapshot unchanged."""
+    resources = initial_state([FOOD])
+    state = derive(10, (), resources)
+    assert state.resources == resources
+    assert state.resources.amount("RES_FOOD") == 3
+
+
+def test_derive_does_not_consume_the_resources() -> None:
+    """The derivation never spends the provisions it receives."""
+    resources = initial_state([FOOD])
+    state = derive(10, (TALK, REPORT), resources)
+
+    assert state.resources.amount("RES_FOOD") == 3
+    assert resources.amount("RES_FOOD") == 3
+
+
+def test_derive_is_deterministic_with_resources() -> None:
+    """The same three inputs always produce an equal state."""
+    resources = initial_state([FOOD])
+    first = derive(42, (TALK, REPORT), resources)
+    second = derive(42, (TALK, REPORT), resources)
+    assert first == second
+    assert repr(first) == repr(second)
+
+
+def test_derive_with_different_resources_yields_different_states() -> None:
+    """The provisions are part of the identity of the derived state."""
+    full = initial_state([FOOD])
+    empty = empty_state()
+    assert derive(10, (), full) != derive(10, (), empty)
+
+
+def test_the_flags_do_not_depend_on_the_resources() -> None:
+    """The provisions raise no flag and change no flag."""
+    full = initial_state([FOOD])
+    empty = empty_state()
+    assert derive(10, (TALK, REPORT), full).flags == derive(10, (TALK, REPORT), empty).flags
+
+
+def test_the_flags_do_not_depend_on_the_tick() -> None:
+    """The flag vocabulary still depends on the decisions alone."""
+    resources = initial_state([FOOD])
+    decisions = (TALK, REPORT, MOVE, EXAMINE)
+    flags = derive(0, decisions, resources).flags
+    for tick in (1, 96, 288, TOTAL_TICKS):
+        assert derive(tick, decisions, resources).flags == flags
+
+
+def test_the_flags_do_not_depend_on_the_resources_across_the_cycle() -> None:
+    """Depleting the stores does not change the story the flags tell."""
+    decisions = (TALK, REPORT)
+    full = initial_state([FOOD])
+    spent = consume(full, [FOOD], actions=3)
+
+    for tick in range(0, TOTAL_TICKS + 1, 47):
+        assert derive(tick, decisions, full).flags == derive(tick, decisions, spent).flags
+
+
+def test_derive_accepts_a_resource_state_as_a_keyword() -> None:
+    """The resources can be passed by keyword."""
+    resources = initial_state([FOOD])
+    assert derive(0, (), resources=resources).resources == resources
+
+
+def test_the_world_state_carries_the_resources_by_default() -> None:
+    """A world state built by hand defaults to a neutral resource state."""
+    state = WorldState(
+        tick=0,
+        day=1,
+        hour=0,
+        minute=0,
+        decisions=(),
+        flags=frozenset(),
+    )
+    assert dict(state.resources.amounts) == {}

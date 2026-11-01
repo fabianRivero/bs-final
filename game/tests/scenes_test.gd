@@ -149,7 +149,7 @@ func _test_game() -> void:
 			_check_equal(
 				"the cycle bar spans the whole cycle",
 				int(cycle_bar.get("max_value")),
-				288
+				480
 			)
 
 	scene.queue_free()
