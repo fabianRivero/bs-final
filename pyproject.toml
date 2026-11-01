@@ -1,7 +1,7 @@
 [project]
 name = "aldermere"
 version = "0.1.0"
-description = "Aldermere: a top-down investigation RPG with a pure-Python simulation core and a Godot 4.6 presentation layer."
+description = "Aldermere: a top-down investigation RPG with a pure-Python simulation core and a Godot 4.7.2 presentation layer."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

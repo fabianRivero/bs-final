@@ -1,4 +1,4 @@
-﻿# Aldermere
+# Aldermere
 
 [![CI](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianRivero/bs-final/actions/workflows/ci.yml)
 
@@ -20,16 +20,18 @@ an epidemic.
 ## Description
 
 **Aldermere** is a tile-based, top-down role-playing game with no combat, no
-levels and no experience points. The player arrives at a small coastal
-fishing town where a deadly disease has already taken its first victims. The
-only way out is to understand what the disease is, how it spreads and how it
-can be stopped. The game is deliberately about *investigation*, not about
-fighting: the core verb is **asking questions**, and the progression system is
-**knowledge**.
+levels and no experience points. The player arrives at a small mining village
+in colonial southern Africa, in the second decade of the twentieth century,
+where a deadly illness has already taken its first victims. The village
+lives off a diamond mine, and the mine has just stopped. The only way out is
+to understand what the disease is, how it spreads and what can be done about
+it before the food runs out. The game is deliberately about *investigation*,
+not about fighting: the core verb is **asking questions**, and the
+progression system is **knowledge**.
 
 Time is the protagonist. The world advances in discrete **ticks of 15
 minutes** of in-game time, and every single valid action — walking one tile,
-talking to a neighbour, reading a book, examining the harbour — costs exactly
+talking to a neighbour, reading a book, examining the river — costs exactly
 one tick. A full day is 96 ticks and the entire playable cycle is **5 days =
 480 ticks**, which maps to a real playtime of roughly 25 to 40 minutes. The
 tick is discrete and strictly monotonic: it never moves backwards, and there
@@ -41,7 +43,7 @@ fifteen days is a one-line change (`CYCLE_DAYS = 15` in `core/time.py`) that
 leaves the daily pattern of the schedules and the lighting untouched.
 
 The town lives on a schedule. Every NPC in Aldermere — the baker, the
-fisher, the harbourmaster, the widow of the previous doctor — follows a daily
+fisher, the mine overseer, the widow of the previous doctor — follows a daily
 routine of schedule blocks that place them in a zone, at a tile, doing an
 activity, with a matching dialogue variant. If the player speaks to the
 fisher Marta at 11:00 she is selling fish and tells a certain story; at 16:00
@@ -49,9 +51,19 @@ she is repairing her boat and tells a different one. If the player misses the
 baker's window before 09:30, that testimony is simply gone for this run. This
 creates pressure without a single combat encounter.
 
+**The game does not give the player the truth.** The illness is real, the
+answers are partial, and the player never learns where it comes from. What
+the player accumulates is split in two: confirmed facts and unconfirmed
+suspicions, both shown in a knowledge panel. A suspicion can be confirmed or
+refuted with concrete evidence, and it can also be wrong. The endings are
+derived from what the player *does* with what they believe, not from what
+they know: closing the shaft on a suspicion is enough to reach the best
+ending, and refusing to act because nothing is certain is how you reach the
+worst one.
+
 The disease leaves behind symptoms. Talking to the sick neighbours yields
 symptoms with their origin and the tick at which they were reported; reading
-the botany handbook, the herbalist's notes, the previous doctor's journal and
+the medical handbook, the herbalist's notes, the previous doctor's journal and
 the town registry yields sources that support or refute those symptoms. From
 that evidence the player formulates hypotheses in the notebook and then
 verifies them in the field. The engine only knows about a generic
@@ -60,20 +72,18 @@ verifies them in the field. The engine only knows about a generic
 disease actually is. That is what makes it possible to change the premise
 without touching a line of Python.
 
-The game has **four final endings**, evaluated deterministically at the moment
-the player resolves the main quest or at the closing tick, whichever comes
-first: **The Cure** (the correct hypothesis is verified and the total remedy is
-administered in time), **The Containment** (the disease is slowed but not
-stopped), **The Well-Meant Mistake** (a remedy is given on a refuted
-hypothesis) and **The Silent Village** (nothing was done; failure is a
-first-class ending, not a timeout). The run ends on the ending that was
+The game has **four final endings**, evaluated deterministically by priority
+from the actions the player took. They are answers to one question, and
+none of them is the good one: *do you protect the people in front of you now,
+or the world you cannot see later?* Resolving the situation means that nobody
+dies because of the player's decision. The run ends on the ending that was
 reached. The cycle is never restarted.
 
 The technical rule that shapes everything is a single sentence: **Python is
 the source of truth. Godot presents and captures input.** The entire
 simulation — clock, schedules, events, missions, hypotheses, lighting and
 endings — lives in pure Python with no dependency on the game engine, and is
-covered by tests. Godot 4.6 renders the state that Python derives and sends
+covered by tests. Godot 4.7 renders the state that Python derives and sends
 player actions back. Godot never decides anything: if a rule is not in the
 exported JSON, the rule does not exist in the game.
 
@@ -120,7 +130,7 @@ key.
 |---|---|---|---|
 | Python | 3.14+ | Yes | The simulation core targets 3.14. |
 | uv | 0.13+ | Yes | Manages the virtualenv and dependencies. |
-| Godot Engine | 4.6-stable | Optional | Only needed to run the playable client. |
+| Godot Engine | 4.7.2-stable | Optional | Only needed to run the playable client. |
 | Node.js | 20+ | Optional | Only needed if the HTML5 export template is regenerated. |
 | Make | any | Optional | `make` is not installed by default on Windows; see below. |
 
@@ -290,7 +300,7 @@ final-project-aldermere/
 │   ├── test_determinism.py# The same input sequence always yields the same state
 │   ├── test_tools_cli.py  # Contract tests for the command line entry points
 │   └── fixtures/          # Sample JSON fixtures used by the test suite
-├── game/                  # Godot 4.6 project: scenes, tilesets, GDScript (presentation only)
+├── game/                  # Godot 4.7.2 project: scenes, tilesets, GDScript (presentation only)
 ├── docs/                  # Project documentation (architecture, prompts, walkthrough)
 ├── build/                 # Build artefacts, including the game_content.json contract
 ├── .github/workflows/     # Continuous integration definition
@@ -305,7 +315,7 @@ final-project-aldermere/
 | `content/` | The data: the premise plate, symptoms, sources, zones, NPCs, events, missions, dialogues, lighting phases. |
 | `tools/` | The command line entry points: simulate, validate, generate, export and parity-check the content. |
 | `tests/` | The pytest suite that proves the simulation is deterministic and correct. |
-| `game/` | The Godot 4.6 client: scenes, tilesets and GDScript that present state and capture input. |
+| `game/` | The Godot 4.7.2 client: scenes, tilesets and GDScript that present state and capture input. |
 | `docs/` | Written documentation: architecture, prompt catalogue, reference walkthrough. |
 | `build/` | Generated artefacts, including the `game_content.json` contract read by Godot. |
 
@@ -329,7 +339,7 @@ final-project-aldermere/
   simply not interactable.
 - **Scheduled events.** World-changing events fire exactly once when the
   clock reaches their activation tick and their precondition holds: the first
-  death becoming known, the outbreak being acknowledged, the harbour closing,
+  death becoming known, the outbreak being acknowledged, the mine shaft flooding,
   the public meeting on the plaza.
 - **Day/night lighting cycle.** Seven lighting phases cover the 96 ticks of a
   day with no gaps and no overlaps. The phase, the tint colour and the

@@ -65,7 +65,7 @@ Everything else in the project derives from that sentence.
                  |
                  v
      +-------------------------------------------------------------+
-     |  GODOT 4.6  (presentation + input only)                      |
+     |  Godot 4.7.2  (presentation + input only)                      |
      |                                                             |
      |   content_loader.gd  loads and parses the JSON               |
      |   world_view.gd      draws tiles, colliders, camera          |
