@@ -9,6 +9,21 @@ class_name NpcAgent
 ##
 ## This is the F3 placeholder. The schedules of the content document are
 ## already honoured, but the interaction and the dialogue are F4.
+##
+## [b]Death.[/b]
+##
+## A villager who dies stops being in the world. The agent reads the death
+## from the content document, exactly like `core/schedule.py` does, and a
+## dead NPC is **neither placed nor drawn**: it is not idle at the origin,
+## it is simply not there. When the villager dies while the agent is on
+## screen, the agent disappears.
+##
+## The tick of the death is the tick at which the villager is **already
+## gone**: with `deceased_at_tick = 192` the villager is alive at tick 191
+## and dead at tick 192.
+##
+## The design decision D33 forbids a counter of the dead: the player only
+## sees the empty space where somebody used to stand.
 
 ## Emitted when the NPC moves to a new tile.
 signal moved_to(tile: Vector2i)
@@ -36,6 +51,9 @@ var tile: Vector2i = Vector2i.ZERO
 
 ## Whether the NPC can be interacted with at the current tick.
 var is_interactable: bool = false
+
+## Whether the NPC is alive at the current tick.
+var is_alive: bool = true
 
 ## The activity the NPC performs at the current tick.
 var activity: String = ""
@@ -110,8 +128,19 @@ func _make_part(part_name: String, colour: Color) -> Polygon2D:
 
 ## Move the NPC to the tile its schedule declares at the given tick.
 ##
+## A dead NPC is not placed and not drawn: the agent is hidden and the
+## schedule is never consulted for it. The tick of the death is the tick at
+## which the villager is already gone, so the agent disappears on that very
+## tick.
+##
 ## @param tick_index Absolute tick index.
 func refresh(tick_index: int) -> void:
+	if is_dead(tick_index):
+		_become_dead()
+		return
+
+	is_alive = true
+	visible = true
 	var position_in_day: int = tick_index % TICKS_PER_DAY
 	var resolved: Dictionary = _resolve_schedule(position_in_day)
 
@@ -125,6 +154,32 @@ func refresh(tick_index: int) -> void:
 	tile = resolved_tile
 	position = Vector2(tile.x * TILE_SIZE, tile.y * TILE_SIZE)
 	moved_to.emit(tile)
+
+
+## Check whether the NPC is dead at the given tick.
+##
+## Mirrors `core.schedule.is_dead`: the tick of the death is the tick at
+## which the villager is already gone.
+##
+## @param tick_index Absolute tick index.
+## @return `true` when the NPC is dead at that tick.
+func is_dead(tick_index: int) -> bool:
+	var deceased_at_tick = data.get("deceased_at_tick", null)
+	if deceased_at_tick == null:
+		return false
+	return tick_index >= int(deceased_at_tick)
+
+
+## Hide the agent because the villager is dead.
+##
+## The agent stops being drawn and stops being interactable. It is not
+## moved to the origin: a dead villager is not idle at the origin, they are
+## simply not there.
+func _become_dead() -> void:
+	is_alive = false
+	is_interactable = false
+	activity = ""
+	visible = false
 
 
 ## Whether the NPC is currently interpolating towards a tile.

@@ -12,10 +12,12 @@ Conventions under test
 ----------------------
 * Identifiers carry a prefix that states their type (``SYM_``, ``NPC_``...).
 * Tick ranges are half-open: ``start`` is inclusive, ``end`` is exclusive.
-* The ``TBD`` marker means "the design decision is still pending" and must be
-  rejected by the premise plate.
+* The ``TBD`` marker means "the design decision is still pending" and must
+  be rejected by the premise plate.
 * The lighting table covers the 96 ticks of a day, without gaps and without
   overlaps.
+* The death of an NPC is declared by a tick **and** a cause, and the tick
+  lies inside the cycle.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import pytest
 from pydantic import ValidationError
 
 from content.schema import (
+    DEATH_CAUSE_PREFIXES,
     Cause,
     CauseCategory,
     DialogueNode,
@@ -1151,3 +1154,143 @@ def test_authored_premise_plate_still_carries_the_tbd_marker() -> None:
     document = json.loads(BASE_PREMISE_PATH.read_text(encoding="utf-8"))
     with pytest.raises(ValidationError, match="unresolved marker"):
         Premise.model_validate(document["premise"])
+
+
+# ----------------------------------------------------------------------
+# The death of an NPC
+# ----------------------------------------------------------------------
+
+
+def _npc(**overrides: Any) -> dict[str, Any]:
+    """Build a valid NPC document.
+
+    Args:
+        overrides: Fields to override.
+
+    Returns:
+        The NPC document.
+    """
+    document: dict[str, Any] = {
+        "id": "NPC_MILLER",
+        "name": "The Miller",
+        "schedule": [
+            {
+                "start_tick": 0,
+                "end_tick": 96,
+                "zone_id": "ZN_YARD",
+                "tile": [1, 2],
+                "activity": "grinding_grain",
+            }
+        ],
+    }
+    document.update(overrides)
+    return document
+
+
+def test_an_npc_without_a_death_is_valid() -> None:
+    """A living NPC declares no death at all."""
+    npc = Npc.model_validate(_npc())
+    assert npc.deceased_at_tick is None
+    assert npc.death_cause == ""
+
+
+def test_an_npc_with_a_death_is_valid() -> None:
+    """A death is a tick and a cause, and nothing else."""
+    npc = Npc.model_validate(
+        _npc(deceased_at_tick=192, death_cause="plague_fever"),
+    )
+    assert npc.deceased_at_tick == 192
+    assert npc.death_cause == "plague_fever"
+
+
+def test_npc_rejects_a_death_tick_out_of_range() -> None:
+    """A death outside the cycle cannot happen."""
+    with pytest.raises(ValidationError, match=r"deceased_at_tick must be within"):
+        Npc.model_validate(_npc(deceased_at_tick=OUT_OF_RANGE_TICK, death_cause="plague_fever"))
+
+
+def test_npc_rejects_a_negative_death_tick() -> None:
+    """A death before the cycle opens cannot happen."""
+    with pytest.raises(ValidationError, match=r"deceased_at_tick must be within"):
+        Npc.model_validate(_npc(deceased_at_tick=-1, death_cause="plague_fever"))
+
+
+def test_npc_accepts_the_closing_tick_as_a_death() -> None:
+    """The closing tick is a valid instant, even for a death."""
+    npc = Npc.model_validate(_npc(deceased_at_tick=total_ticks(), death_cause="plague_fever"))
+    assert npc.deceased_at_tick == total_ticks()
+
+
+def test_npc_rejects_a_cause_without_a_death() -> None:
+    """There is no cause without a death."""
+    with pytest.raises(ValidationError, match="requires a deceased_at_tick"):
+        Npc.model_validate(_npc(death_cause="plague_fever"))
+
+
+def test_npc_rejects_a_death_without_a_cause() -> None:
+    """There is no death without a cause."""
+    with pytest.raises(ValidationError, match="requires a death_cause"):
+        Npc.model_validate(_npc(deceased_at_tick=192))
+
+
+def test_npc_rejects_an_unknown_death_cause() -> None:
+    """The cause of a death uses the reserved vocabulary."""
+    with pytest.raises(ValidationError, match="must start with one of"):
+        Npc.model_validate(_npc(deceased_at_tick=192, death_cause="bad luck"))
+
+
+@pytest.mark.parametrize("cause", DEATH_CAUSE_PREFIXES)
+def test_npc_accepts_every_valid_death_cause_prefix(cause: str) -> None:
+    """Every kind of death of the vocabulary is accepted."""
+    npc = Npc.model_validate(_npc(deceased_at_tick=192, death_cause=f"{cause}fever"))
+    assert npc.death_cause == f"{cause}fever"
+
+
+def test_the_death_cause_prefixes_are_not_empty() -> None:
+    """The vocabulary of the causes of death is not empty."""
+    assert DEATH_CAUSE_PREFIXES
+    assert all(prefix for prefix in DEATH_CAUSE_PREFIXES)
+
+
+# ----------------------------------------------------------------------
+# The event that kills
+# ----------------------------------------------------------------------
+
+
+def test_event_accepts_deaths() -> None:
+    """An event may declare the villagers it kills."""
+    event = Event.model_validate(
+        {
+            "id": "EV_X",
+            "name": "X",
+            "activation_tick": 192,
+            "deaths": ["NPC_MILLER"],
+        }
+    )
+    assert event.deaths == ("NPC_MILLER",)
+
+
+def test_event_defaults_to_no_deaths() -> None:
+    """An event that kills nobody declares no death."""
+    event = Event.model_validate({"id": "EV_X", "name": "X", "activation_tick": 100})
+    assert event.deaths == ()
+
+
+def test_world_content_rejects_an_event_that_kills_an_unknown_npc(
+    valid_world: WorldContent,
+) -> None:
+    """An event that kills somebody who does not exist is rejected."""
+    document = valid_world.model_dump(mode="json")
+    document["events"][0]["deaths"] = ["NPC_GHOST"]
+    with pytest.raises(ValidationError, match="kills unknown npc 'NPC_GHOST'"):
+        WorldContent.model_validate(document)
+
+
+def test_world_content_accepts_an_event_that_kills_a_known_npc(
+    valid_world: WorldContent,
+) -> None:
+    """An event that kills a villager of the world is accepted."""
+    document = valid_world.model_dump(mode="json")
+    document["events"][0]["deaths"] = [document["npcs"][0]["id"]]
+    world = WorldContent.model_validate(document)
+    assert world.events[0].deaths == (document["npcs"][0]["id"],)

@@ -21,6 +21,29 @@ Gaps are allowed on purpose. When no block covers the tick, the NPC is in its
 *default* state: at the origin, idle and **not** interactable. A schedule may
 also declare an explicit default block by using the reserved zone id
 ``"default"``.
+
+Death
+-----
+An NPC may die. The death is a **property of the NPC**, not a decision of the
+player: it is declared by the content as ``deceased_at_tick``, and it is
+resolved by the very same pure function that resolves the schedule.
+
+The tick of the death is the tick at which the NPC is **already gone**::
+
+    deceased_at_tick = 192  ->  alive at tick 191, dead at tick 192
+
+The comparison is therefore ``tick >= deceased_at_tick``, not
+``tick > deceased_at_tick``. The convention is the one the rest of the
+project uses for half-open ranges: the day of the death belongs to the death.
+
+A dead NPC is **not at its post and not interactable**. Its tile and its
+activity are *not resolved*: a dead villager is not "idle at the origin",
+they are simply not in the world. So the state of a dead NPC is the default
+state with ``alive=False`` and ``interactable=False``, and the schedule is
+never consulted for it.
+
+This is the whole point of the design decision D34: the player learns how
+bad the illness is through the people, and the people stop being there.
 """
 
 from __future__ import annotations
@@ -38,6 +61,7 @@ __all__ = [
     "ScheduleEntry",
     "ScheduleOverlapError",
     "is_available",
+    "is_dead",
     "npc_state",
     "validate_schedule",
 ]
@@ -96,6 +120,8 @@ class NpcState:
         tile: Tile coordinates inside the zone.
         activity: Activity performed at that moment.
         interactable: Whether the player can interact with the NPC.
+        alive: Whether the NPC is alive at that tick. A dead NPC is not at
+            its post and cannot be interacted with.
     """
 
     npc_id: str
@@ -103,6 +129,7 @@ class NpcState:
     tile: tuple[int, int]
     activity: str
     interactable: bool
+    alive: bool = True
 
 
 @dataclass(frozen=True)
@@ -114,11 +141,19 @@ class Npc:
         name: Display name of the NPC.
         schedule: Blocks of the daily routine, ordered by ``start_tick``.
             Blocks must not overlap.
+        deceased_at_tick: Absolute tick at which the NPC dies, or ``None``
+            when it survives the whole cycle. The tick is **inclusive of the
+            death**: the NPC is alive at ``deceased_at_tick - 1`` and already
+            dead at ``deceased_at_tick``.
+        death_cause: Label of the cause of the death, e.g.
+            ``"plague_fever"``. It is empty while the NPC lives.
     """
 
     id: str
     name: str
     schedule: tuple[ScheduleEntry, ...]
+    deceased_at_tick: int | None = None
+    death_cause: str = ""
 
 
 def _validate_entry(entry: ScheduleEntry, npc_id: str) -> None:
@@ -205,18 +240,78 @@ def _default_state(npc: Npc) -> NpcState:
     )
 
 
+def _dead_state(npc: Npc) -> NpcState:
+    """Build the state of an NPC that is already dead.
+
+    A dead NPC is **not at its post and not interactable**. Its tile and its
+    activity are *not resolved*: the schedule is never consulted for
+    somebody who is no longer in the world. The state is the default state
+    with ``alive=False`` and ``interactable=False``, so the presentation
+    layer can simply skip the NPC.
+
+    Args:
+        npc: NPC to describe.
+
+    Returns:
+        The state of the dead NPC.
+    """
+    default = _default_state(npc)
+    return NpcState(
+        npc_id=npc.id,
+        zone=default.zone,
+        tile=default.tile,
+        activity=default.activity,
+        interactable=False,
+        alive=False,
+    )
+
+
+def is_dead(npc: Npc, tick: int) -> bool:
+    """Check whether an NPC is dead at a given tick.
+
+    The tick of the death is the tick at which the NPC is **already gone**:
+    an NPC whose ``deceased_at_tick`` is ``192`` is alive at tick 191 and
+    dead at tick 192.
+
+    Args:
+        npc: NPC to check.
+        tick: Absolute tick index.
+
+    Returns:
+        ``True`` when the NPC is dead at that tick.
+
+    Raises:
+        TypeError: If ``tick`` is not an integer.
+        ValueError: If ``tick`` is negative.
+    """
+    if not isinstance(tick, int) or isinstance(tick, bool):
+        raise TypeError(f"tick must be an int, got {type(tick).__name__}")
+    if tick < 0:
+        raise ValueError(f"tick must be >= 0, got {tick}")
+
+    if npc.deceased_at_tick is None:
+        return False
+    return tick >= npc.deceased_at_tick
+
+
 def npc_state(npc: Npc, tick: int) -> NpcState:
     """Resolve the state of an NPC at a given tick.
 
     The daily pattern repeats, so the absolute tick is normalised with
     ``tick % TICKS_PER_DAY``: tick 28 and tick 124 resolve to the same state.
 
+    A dead NPC is **not at its post and not interactable**. The tick of the
+    death is the tick at which the NPC is already gone: with
+    ``deceased_at_tick = 192`` the NPC is alive at tick 191 and dead at tick
+    192. The tile and the activity of a dead NPC are not resolved, because
+    a dead villager is not idle at the origin: they are simply not there.
+
     Args:
         npc: NPC whose state is resolved.
         tick: Absolute tick index.
 
     Returns:
-        The zone, tile, activity and interactability of the NPC.
+        The zone, tile, activity, interactability and liveness of the NPC.
 
     Raises:
         TypeError: If ``tick`` is not an integer.
@@ -230,6 +325,9 @@ def npc_state(npc: Npc, tick: int) -> NpcState:
         raise TypeError(f"tick must be an int, got {type(tick).__name__}")
     if tick < 0:
         raise ValueError(f"tick must be >= 0, got {tick}")
+
+    if is_dead(npc, tick):
+        return _dead_state(npc)
 
     position = tick % TICKS_PER_DAY
     for entry in npc.schedule:
@@ -246,6 +344,9 @@ def npc_state(npc: Npc, tick: int) -> NpcState:
 
 def is_available(npc: Npc, tick: int) -> bool:
     """Check whether the player can interact with an NPC at a given tick.
+
+    The answer is the interactability of the resolved state, so a dead NPC
+    is never available: a dead villager is not at their post.
 
     Args:
         npc: NPC to check.

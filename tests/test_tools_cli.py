@@ -128,7 +128,7 @@ def test_export_web_writes_the_game_contract(tmp_path: Path) -> None:
     document = json.loads(destination.read_text(encoding="utf-8"))
     assert document["content_version"] == "0.1.0-fixture"
     assert len(document["zones"]) == 2
-    assert len(document["npcs"]) == 2
+    assert len(document["npcs"]) == 3
 
 
 def test_export_web_carries_the_lighting_table(tmp_path: Path) -> None:

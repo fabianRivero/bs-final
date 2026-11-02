@@ -4,6 +4,10 @@ The derived state is the heart of the project invariant: the world is never
 stored, it is recomputed from ``(tick, decisions, resources)``. The tests
 below pin down that ``derive`` is pure, deterministic and free of side
 effects, and that the flag vocabulary follows from the decisions alone.
+
+The tests of the last section pin down the fate of the **testimonies**: a
+testimony the player already obtained is kept for ever, and only the
+opportunity to hear it again is lost when the villager dies.
 """
 
 from __future__ import annotations
@@ -13,7 +17,14 @@ import copy
 import pytest
 
 from core.resources import ResourceSpec, consume, empty_state, initial_state
-from core.state import Decision, WorldState, derive
+from core.schedule import Npc, ScheduleEntry
+from core.state import (
+    Decision,
+    WorldState,
+    available_dialogues,
+    derive,
+    lost_testimonies,
+)
 from core.time import TOTAL_TICKS
 
 TALK = Decision(kind="talk", target="NPC_MARTA", tick=28, payload={})
@@ -389,3 +400,156 @@ def test_the_world_state_carries_the_resources_by_default() -> None:
         flags=frozenset(),
     )
     assert dict(state.resources.amounts) == {}
+
+
+# ----------------------------------------------------------------------
+# Testimonies and the death of their witness
+# ----------------------------------------------------------------------
+
+#: Tick at which the villager of the testimony tests dies.
+DEATH_TICK = 192
+
+
+def _npc(npc_id: str, deceased_at_tick: int | None = None) -> Npc:
+    """Build an NPC with a full-day schedule.
+
+    Args:
+        npc_id: Id of the NPC.
+        deceased_at_tick: Tick of the death, or ``None`` for a living NPC.
+
+    Returns:
+        The NPC with its schedule.
+    """
+    return Npc(
+        id=npc_id,
+        name=npc_id,
+        schedule=(
+            ScheduleEntry(
+                start_tick=0,
+                end_tick=96,
+                zone="ZONE_PORT",
+                tile=(1, 1),
+                activity="working",
+                interactable=True,
+            ),
+        ),
+        deceased_at_tick=deceased_at_tick,
+        death_cause="plague_fever" if deceased_at_tick is not None else "",
+    )
+
+
+DEAD_NPC = _npc("NPC_DEAD", DEATH_TICK)
+LIVING_NPC = _npc("NPC_ALIVE")
+NPCS = (DEAD_NPC, LIVING_NPC)
+
+
+def test_a_testimony_obtained_before_the_death_is_kept() -> None:
+    """What the player heard before the death stays known for ever.
+
+    The knowledge lives in the flags of the world, and the death of the
+    witness cannot take it away: the player already knows it.
+    """
+    talk = Decision(kind="talk", target="NPC_DEAD", tick=28, payload={})
+    state = derive(DEATH_TICK, (talk,))
+    assert state.has_flag("talked:NPC_DEAD")
+
+
+def test_a_testimony_obtained_before_the_death_survives_the_death() -> None:
+    """Deriving the state after the death still carries the testimony."""
+    talk = Decision(kind="talk", target="NPC_DEAD", tick=28, payload={})
+    before = derive(DEATH_TICK - 1, (talk,))
+    after = derive(TOTAL_TICKS, (talk,))
+    assert before.has_flag("talked:NPC_DEAD")
+    assert after.has_flag("talked:NPC_DEAD")
+    assert after.flags == before.flags
+
+
+def test_the_death_of_an_npc_does_not_change_the_flags() -> None:
+    """The death is a fact of the world, not a decision: it raises no flag."""
+    talk = Decision(kind="talk", target="NPC_DEAD", tick=28, payload={})
+    assert derive(DEATH_TICK - 1, (talk,)).flags == derive(TOTAL_TICKS, (talk,)).flags
+
+
+def test_lost_testimonies_reports_the_villager_never_talked_to() -> None:
+    """The dead villager the player never spoke to is a lost testimony."""
+    state = derive(DEATH_TICK, ())
+    assert lost_testimonies(state, NPCS, DEATH_TICK) == ("NPC_DEAD",)
+
+
+def test_lost_testimonies_excludes_a_villager_already_talked_to() -> None:
+    """A testimony already obtained is not lost when the witness dies."""
+    talk = Decision(kind="talk", target="NPC_DEAD", tick=28, payload={})
+    state = derive(DEATH_TICK, (talk,))
+    assert lost_testimonies(state, NPCS, DEATH_TICK) == ()
+
+
+def test_lost_testimonies_is_empty_before_the_death() -> None:
+    """Nobody has lost anything while the villager is still alive."""
+    state = derive(DEATH_TICK - 1, ())
+    assert lost_testimonies(state, NPCS, DEATH_TICK - 1) == ()
+
+
+def test_lost_testimonies_never_reports_a_living_villager() -> None:
+    """A living villager is not a lost testimony."""
+    state = derive(TOTAL_TICKS, ())
+    assert lost_testimonies(state, NPCS, TOTAL_TICKS) == ("NPC_DEAD",)
+
+
+def test_lost_testimonies_ignores_a_talk_without_target() -> None:
+    """A talk without a target names nobody, so it saves no testimony."""
+    untargeted = Decision(kind="talk", target="", tick=28, payload={})
+    state = derive(DEATH_TICK, (untargeted,))
+    assert lost_testimonies(state, NPCS, DEATH_TICK) == ("NPC_DEAD",)
+
+
+def test_available_dialogues_excludes_the_dead() -> None:
+    """A dead villager cannot be talked to any more."""
+    state = derive(DEATH_TICK, ())
+    assert available_dialogues(state, NPCS, DEATH_TICK) == frozenset({"NPC_ALIVE"})
+
+
+def test_available_dialogues_includes_the_dead_before_their_death() -> None:
+    """Before the death the villager is at their post as usual."""
+    state = derive(DEATH_TICK - 1, ())
+    assert available_dialogues(state, NPCS, DEATH_TICK - 1) == frozenset({"NPC_DEAD", "NPC_ALIVE"})
+
+
+def test_available_dialogues_follows_the_schedule() -> None:
+    """An NPC that is not interactable at that tick has no dialogue."""
+    sleeping = Npc(
+        id="NPC_SLEEPING",
+        name="Sleeping",
+        schedule=(
+            ScheduleEntry(
+                start_tick=0,
+                end_tick=96,
+                zone="ZONE_TAVERN",
+                tile=(1, 1),
+                activity="sleeping",
+                interactable=False,
+            ),
+        ),
+    )
+    state = derive(0, ())
+    assert available_dialogues(state, (sleeping,), 0) == frozenset()
+
+
+def test_available_dialogues_is_empty_without_npcs() -> None:
+    """A world without NPCs has no dialogue to reach."""
+    state = derive(0, ())
+    assert available_dialogues(state, (), 0) == frozenset()
+
+
+def test_the_opportunity_is_lost_but_the_knowledge_is_kept() -> None:
+    """The whole rule in one test.
+
+    The player heard the testimony before the death, so the flag survives
+    the death. But the villager is dead, so the dialogue is out of reach
+    and the testimony is not reported as lost either.
+    """
+    talk = Decision(kind="talk", target="NPC_DEAD", tick=28, payload={})
+    state = derive(DEATH_TICK, (talk,))
+
+    assert state.has_flag("talked:NPC_DEAD")
+    assert "NPC_DEAD" not in available_dialogues(state, NPCS, DEATH_TICK)
+    assert lost_testimonies(state, NPCS, DEATH_TICK) == ()

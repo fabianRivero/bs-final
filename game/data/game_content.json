@@ -120,6 +120,50 @@
       ],
       "dialogue_root": "DL_KEEPER_ROOT",
       "portrait": null
+    },
+    {
+      "id": "NPC_BAKER",
+      "name": "The Baker",
+      "role": "baker",
+      "schedule": [
+        {
+          "start_tick": 0,
+          "end_tick": 20,
+          "zone_id": "ZN_HALL",
+          "tile": [
+            3,
+            3
+          ],
+          "activity": "sleeping",
+          "interactable": false
+        },
+        {
+          "start_tick": 20,
+          "end_tick": 56,
+          "zone_id": "ZN_YARD",
+          "tile": [
+            7,
+            4
+          ],
+          "activity": "kneading_dough",
+          "interactable": true
+        },
+        {
+          "start_tick": 56,
+          "end_tick": 96,
+          "zone_id": "ZN_YARD",
+          "tile": [
+            9,
+            5
+          ],
+          "activity": "selling_bread",
+          "interactable": true
+        }
+      ],
+      "dialogue_root": "DL_BAKER_ROOT",
+      "portrait": null,
+      "deceased_at_tick": 192,
+      "death_cause": "plague_fever"
     }
   ],
   "symptoms": [
@@ -248,6 +292,26 @@
         "yard_closed"
       ],
       "precondition": "flag:first_death_known"
+    },
+    {
+      "id": "EV_THE_BAKER_DIES",
+      "name": "The baker does not come back",
+      "activation_tick": 192,
+      "zone_ids": [
+        "ZN_YARD"
+      ],
+      "npc_ids": [
+        "NPC_BAKER"
+      ],
+      "description": "The baker is found dead in the mill yard on the third evening.",
+      "effects": {},
+      "sets_flags": [
+        "first_death_known"
+      ],
+      "precondition": null,
+      "deaths": [
+        "NPC_BAKER"
+      ]
     }
   ],
   "missions": [
@@ -473,6 +537,48 @@
         {
           "id": "ok",
           "text": "I will read it now.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": null
+    },
+    {
+      "id": "DL_BAKER_ROOT",
+      "speaker": "NPC_BAKER",
+      "text": "The dough will not rise. Nothing rises any more.",
+      "options": [
+        {
+          "id": "ask_symptoms",
+          "text": "What is wrong with you?",
+          "requires_flags": [],
+          "sets_flags": [
+            "heard_symptoms_baker"
+          ],
+          "next_node": "DL_BAKER_SYMPTOMS",
+          "reports_symptom": "SYM_NUMBNESS"
+        },
+        {
+          "id": "leave",
+          "text": "Good day to you.",
+          "requires_flags": [],
+          "sets_flags": [],
+          "next_node": null,
+          "reports_symptom": null
+        }
+      ],
+      "activity": "kneading_dough"
+    },
+    {
+      "id": "DL_BAKER_SYMPTOMS",
+      "speaker": "NPC_BAKER",
+      "text": "My hands. I cannot feel them any more.",
+      "options": [
+        {
+          "id": "ok",
+          "text": "I will look into it.",
           "requires_flags": [],
           "sets_flags": [],
           "next_node": null,

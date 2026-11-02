@@ -37,6 +37,16 @@
         { "start_tick": 64, "end_tick": 92, "zone": "ZONE_MARKET", "tile": [7, 4], "activity": "greeting_customers", "interactable": true },
         { "start_tick": 92, "end_tick": 96, "zone": "ZONE_MARKET", "tile": [8, 4], "activity": "closing_up", "interactable": false }
       ]
+    },
+    {
+      "id": "NPC_BAKER",
+      "name": "The Baker",
+      "schedule": [
+        { "start_tick": 0, "end_tick": 20, "zone": "ZONE_MARKET", "tile": [2, 2], "activity": "sleeping", "interactable": false },
+        { "start_tick": 20, "end_tick": 96, "zone": "ZONE_MARKET", "tile": [3, 2], "activity": "selling_bread", "interactable": true }
+      ],
+      "deceased_at_tick": 192,
+      "death_cause": "plague_fever"
     }
   ]
 }

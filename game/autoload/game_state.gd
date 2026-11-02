@@ -32,6 +32,22 @@ extends Node
 ## The golden rule of the project holds here: Godot never *decides* anything.
 ## It records what the player did, derives the consequences of that record, and
 ## publishes them.
+##
+## [b]Death.[/b]
+##
+## The death of a villager is a **fact of the world**, not a decision of the
+## player: it is read from the content document and never from the decisions.
+## The autoload mirrors the resolution of `core/schedule.py`:
+##
+## [codeblock]
+## deceased_at_tick = 192  ->  alive at tick 191, dead at tick 192
+## [/codeblock]
+##
+## The tick of the death is the tick at which the villager is **already
+## gone**: they are not at their post, they are not drawn and they are not
+## interactable. The design decision D33 forbids a counter of the dead, so
+## the only thing the player ever sees is the empty space where somebody
+## used to stand.
 
 ## Emitted whenever the tick changes, after the derived state has been recomputed.
 ##
@@ -250,6 +266,53 @@ func symptoms_known() -> PackedStringArray:
 		symptoms.append(symptom_id)
 	symptoms.sort()
 	return symptoms
+
+
+## Check whether an NPC is dead at a given tick.
+##
+## Mirrors `core.schedule.is_dead`. The tick of the death is the tick at
+## which the villager is **already gone**: with `deceased_at_tick = 192` the
+## villager is alive at tick 191 and dead at tick 192.
+##
+## The death is read from the content document, never from the decisions: it
+## is a fact of the world and not something the player could have chosen.
+##
+## @param npc_id Id of the NPC.
+## @param tick_index Absolute tick index.
+## @return `true` when the NPC is dead at that tick.
+func is_dead(npc_id: String, tick_index: int = -1) -> bool:
+	var content_db: Node = AutoloadRef.content_db(self)
+	if content_db == null:
+		return false
+	var npc: Dictionary = content_db.npc(npc_id)
+	if npc.is_empty():
+		return false
+	var deceased_at_tick = npc.get("deceased_at_tick", null)
+	if deceased_at_tick == null:
+		return false
+	var effective_tick: int = tick_index if tick_index >= 0 else tick
+	return effective_tick >= int(deceased_at_tick)
+
+
+## Return the NPCs that are dead at a given tick.
+##
+## Mirrors `core.world.WorldSim.deaths`. The map only ever grows while the
+## clock moves forward: a death is irreversible.
+##
+## @param tick_index Absolute tick index. The current tick is used when it
+## is negative.
+## @return The tick of the death of every dead NPC, keyed by NPC id.
+func deaths(tick_index: int = -1) -> Dictionary:
+	var content_db: Node = AutoloadRef.content_db(self)
+	if content_db == null:
+		return {}
+	var effective_tick: int = tick_index if tick_index >= 0 else tick
+	var dead: Dictionary = {}
+	for npc_id in content_db.npcs.keys():
+		var key: String = String(npc_id)
+		if is_dead(key, effective_tick):
+			dead[key] = int(content_db.npc(key).get("deceased_at_tick", 0))
+	return dead
 
 #endregion
 

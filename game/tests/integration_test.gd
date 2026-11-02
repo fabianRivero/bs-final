@@ -181,7 +181,7 @@ func _test_scene_tree() -> void:
 			)
 
 	var agents: Dictionary = _scene.get("npc_agents")
-	_check("the scene holds the npc agents", agents.size() == 2, "found %d" % agents.size())
+	_check("the scene holds the npc agents", agents.size() == 3, "found %d" % agents.size())
 
 #endregion
 

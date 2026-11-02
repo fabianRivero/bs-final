@@ -4,6 +4,10 @@ The state of an NPC is a pure function of the tick. The tests below pin down
 the three acceptance instants (07:00, 16:00 and 23:00), the repetition of the
 daily pattern, the behaviour outside the schedule and the rejection of
 overlapping blocks.
+
+The tests of the last section pin down the **irreversible death** of an NPC:
+a dead villager is not at their post, not interactable and not resolved
+against their schedule.
 """
 
 from __future__ import annotations
@@ -19,9 +23,10 @@ from core.schedule import (
     ScheduleEntry,
     ScheduleOverlapError,
     is_available,
+    is_dead,
     npc_state,
 )
-from core.time import TICKS_PER_DAY, to_tick
+from core.time import TICKS_PER_DAY, TOTAL_TICKS, to_tick
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "minimal_world.json"
 
@@ -378,3 +383,137 @@ def test_schedule_blocks_must_start_inside_the_day() -> None:
 
     with pytest.raises(ValueError, match="start_tick must be within"):
         validate_schedule(npc)
+
+
+# ----------------------------------------------------------------------
+# The irreversible death of an NPC
+# ----------------------------------------------------------------------
+
+#: Tick at which the villager of the death tests dies. It is the first tick
+#: of Day 3, which is where the first programmed death of the design (D31)
+#: falls.
+DEATH_TICK = 192
+
+
+def _dying_npc(deceased_at_tick: int | None = DEATH_TICK) -> Npc:
+    """Build an NPC that dies at the given tick.
+
+    The NPC is the miller of the fixture: it has a full schedule, so the
+    tests can check that a dead NPC does not fall back to it.
+
+    Args:
+        deceased_at_tick: Tick of the death, or ``None`` for an immortal NPC.
+
+    Returns:
+        The NPC with its schedule and its death.
+    """
+    return Npc(
+        id="NPC_DYING",
+        name="The Dying",
+        schedule=(
+            ScheduleEntry(
+                start_tick=0,
+                end_tick=96,
+                zone="ZONE_PORT",
+                tile=(12, 7),
+                activity="working",
+                interactable=True,
+            ),
+        ),
+        deceased_at_tick=deceased_at_tick,
+        death_cause="plague_fever" if deceased_at_tick is not None else "",
+    )
+
+
+DYING = _dying_npc()
+
+
+def test_an_npc_is_alive_the_tick_before_its_death() -> None:
+    """The tick of the death is the tick at which the NPC is already gone."""
+    assert npc_state(DYING, DEATH_TICK - 1).alive is True
+
+
+def test_an_npc_is_dead_on_the_tick_of_its_death() -> None:
+    """``deceased_at_tick`` is inclusive: the NPC is dead on that very tick."""
+    assert npc_state(DYING, DEATH_TICK).alive is False
+
+
+def test_a_dead_npc_is_not_interactable_on_any_tick() -> None:
+    """A dead villager is not at their post, so nobody can talk to them."""
+    for tick in (DEATH_TICK, DEATH_TICK + 1, TOTAL_TICKS):
+        assert npc_state(DYING, tick).interactable is False
+        assert is_available(DYING, tick) is False
+
+
+def test_a_dead_npc_falls_back_to_the_default_state() -> None:
+    """The schedule of a dead NPC is not resolved: they are simply not there."""
+    state = npc_state(DYING, DEATH_TICK)
+    assert state.zone == DEFAULT_ZONE
+    assert state.tile == (0, 0)
+    assert state.activity == "idle"
+    assert state.alive is False
+
+
+def test_a_dead_npc_does_not_keep_its_schedule() -> None:
+    """The activity of a dead NPC is not the one its schedule declares."""
+    assert npc_state(DYING, DEATH_TICK - 1).activity == "working"
+    assert npc_state(DYING, DEATH_TICK).activity != "working"
+
+
+def test_is_dead_reflects_the_resolution_of_the_state() -> None:
+    """``is_dead`` agrees with the liveness of the resolved state."""
+    for tick in range(0, TOTAL_TICKS + 1, 7):
+        assert is_dead(DYING, tick) == (not npc_state(DYING, tick).alive)
+
+
+def test_is_dead_is_false_before_the_tick_of_the_death() -> None:
+    """The villager is alive up to the tick before the death."""
+    assert is_dead(DYING, DEATH_TICK - 1) is False
+
+
+def test_is_dead_is_true_on_and_after_the_tick_of_the_death() -> None:
+    """The death is irreversible: it stays true for the rest of the cycle."""
+    assert is_dead(DYING, DEATH_TICK) is True
+    assert is_dead(DYING, DEATH_TICK + 1) is True
+    assert is_dead(DYING, TOTAL_TICKS) is True
+
+
+def test_an_npc_without_a_death_survives_the_whole_cycle() -> None:
+    """An NPC with no death date lives until the end of the cycle."""
+    immortal = _dying_npc(deceased_at_tick=None)
+    assert immortal.deceased_at_tick is None
+    assert immortal.death_cause == ""
+    assert npc_state(immortal, TOTAL_TICKS - 1).alive is True
+    assert is_dead(immortal, TOTAL_TICKS - 1) is False
+
+
+def test_an_npc_without_a_death_is_alive_on_the_closing_tick() -> None:
+    """The closing tick is a valid instant: the villager is still there."""
+    immortal = _dying_npc(deceased_at_tick=None)
+    assert npc_state(immortal, TOTAL_TICKS).alive is True
+    assert is_dead(immortal, TOTAL_TICKS) is False
+
+
+def test_a_living_npc_is_still_interactable_on_the_closing_tick() -> None:
+    """A living NPC keeps its schedule until the closing tick."""
+    immortal = _dying_npc(deceased_at_tick=None)
+    assert npc_state(immortal, TOTAL_TICKS).interactable is True
+    assert npc_state(immortal, TOTAL_TICKS).activity == "working"
+
+
+def test_is_dead_rejects_negative_ticks() -> None:
+    """A negative tick is a programming error."""
+    with pytest.raises(ValueError, match="tick must be >= 0"):
+        is_dead(DYING, -1)
+
+
+def test_is_dead_rejects_non_integer_ticks() -> None:
+    """A non-integer tick is a programming error."""
+    with pytest.raises(TypeError, match="tick must be an int"):
+        is_dead(DYING, 1.5)  # type: ignore[arg-type]
+
+
+def test_a_dead_npc_is_not_at_its_post() -> None:
+    """The zone of a dead NPC is not the one its schedule declares."""
+    assert npc_state(DYING, DEATH_TICK - 1).zone == "ZONE_PORT"
+    assert npc_state(DYING, DEATH_TICK).zone != "ZONE_PORT"

@@ -45,8 +45,39 @@ purity of the world and would make a save file impossible to reproduce.
 
 The consequence is that the flags still depend **only** on the decisions.
 The resource state is carried along, but it raises no flag and never
-influences the vocabulary: the story of what the player did and the story of
-what the town has left are two separate threads.
+influences the vocabulary: the story of what the player did and the story
+of what the town has left are two separate threads.
+
+Testimonies and the death of their witness
+------------------------------------------
+The illness and the investigation compete for the same resource: the people
+who know things are the people who get ill, and the people who get ill stop
+being there. So the death of a villager is not an arbitrary punishment: it
+is the loss of the testimony that villager carried.
+
+The rule the whole design rests on is:
+
+    **A testimony that was obtained is kept forever. What is lost is the
+    opportunity.**
+
+Why the two are not symmetric. A testimony the player already heard is
+**knowledge**. It lives in the flags of the world, it was derived from the
+decisions, and the death of the witness cannot take it away: the player
+already knows it. Deriving it again from the same decisions would produce
+the same knowledge, and taking it away would mean rewriting the past, which
+would break the purity of :func:`derive` and make a save file
+unreproducible.
+
+The **opportunity**, on the other hand, is a question about the *present*:
+can the player still walk up to this villager and ask? That depends on the
+clock, on the schedule and on whether the villager is still alive. It is
+recomputed on demand by :func:`available_dialogues`, and the testimonies
+that were never taken are reported by :func:`lost_testimonies`.
+
+This is why :func:`derive` does not change for the death of an NPC. The
+death is a fact of the world (it lives in the content, see
+:mod:`core.schedule`), and the knowledge the player already holds is a fact
+of the decisions. Neither of them is a flag the other one could erase.
 """
 
 from __future__ import annotations
@@ -55,12 +86,15 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from core.resources import ResourceState, empty_state
+from core.schedule import Npc, is_dead, npc_state
 from core.time import to_datetime, total_ticks
 
 __all__ = [
     "Decision",
     "WorldState",
+    "available_dialogues",
     "derive",
+    "lost_testimonies",
 ]
 
 
@@ -292,3 +326,88 @@ def derive(
         flags=frozenset(flags),
         resources=resources if resources is not None else empty_state(),
     )
+
+
+def _talked_targets(state: WorldState) -> frozenset[str]:
+    """Return the ids of the NPCs the player already talked to.
+
+    Args:
+        state: The derived world state.
+
+    Returns:
+        The ids of the NPCs that were the target of a ``"talk"`` decision.
+    """
+    return frozenset(decision.target for decision in state.decisions_of("talk") if decision.target)
+
+
+def available_dialogues(
+    state: WorldState,
+    npcs: Sequence[Npc],
+    tick: int,
+) -> frozenset[str]:
+    """Return the ids of the NPCs whose dialogue can still be reached.
+
+    A dialogue is reachable when the NPC is **alive** and **interactable**
+    at that tick, following its schedule. A dead NPC is not at their post,
+    so their dialogue is out of reach forever.
+
+    The distinction matters because of the design decision D34: the
+    testimony the player **already obtained** is kept (it lives in the flags
+    of the state, and the death of the witness cannot erase what the player
+    already knows), but the **opportunity** to hear it again is lost. This
+    function reports exactly that opportunity.
+
+    Args:
+        state: The derived world state. It is the context the query is
+            answered in: the same set of NPCs may be reachable in one run
+            and not in another, because the world is derived from the
+            decisions. The reachability of a dialogue does not depend on the
+            decisions today, but the signature keeps the query honest: it
+            answers about a *state*, not about the content in the void.
+        npcs: The NPCs of the world.
+        tick: Absolute tick index.
+
+    Returns:
+        The ids of the NPCs that can be talked to at that tick.
+    """
+    del state
+    available: set[str] = set()
+    for npc in npcs:
+        if is_dead(npc, tick):
+            continue
+        if npc_state(npc, tick).interactable:
+            available.add(npc.id)
+    return frozenset(available)
+
+
+def lost_testimonies(
+    state: WorldState,
+    npcs: Sequence[Npc],
+    tick: int,
+) -> tuple[str, ...]:
+    """Return the testimonies that were lost because a villager died.
+
+    A testimony is lost when the villager who carried it **died** and the
+    player **never talked to them**. There is no one left to ask, and no
+    note was ever taken: the opportunity is gone.
+
+    The testimony of a villager the player **did** talk to is not lost, even
+    though the villager is dead: the player already knows it. The knowledge
+    lives in the flags of the world, and it is not a possession of the
+    villager, so the death of the villager cannot take it away.
+
+    The rule is deliberately asymmetric, and that asymmetry is the whole
+    design: the illness and the investigation compete for the same
+    resource, and losing a testimony is not an arbitrary punishment. It is
+    simply that the neighbour is no longer there.
+
+    Args:
+        state: The derived world state, used to read the decisions taken.
+        npcs: The NPCs of the world.
+        tick: Absolute tick index.
+
+    Returns:
+        The ids of the dead NPCs the player never talked to, sorted.
+    """
+    talked = _talked_targets(state)
+    return tuple(sorted(npc.id for npc in npcs if is_dead(npc, tick) and npc.id not in talked))

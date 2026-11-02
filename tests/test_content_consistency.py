@@ -14,6 +14,9 @@ The rules under test
 * The ``symptom -> cause`` table covers every symptom of the progression.
 * The schedules do not overlap and cover the ticks they claim to.
 * The lighting table agrees with the canonical table of :mod:`core.lighting`.
+* Every event that declares deaths references existing NPCs, and the tick of
+  the death of an NPC matches the activation tick of the event that kills
+  it.
 """
 
 from __future__ import annotations
@@ -49,10 +52,10 @@ def test_fixture_is_complete(world: WorldContent) -> None:
     """The fixture holds every collection the design needs."""
     assert world.content_version
     assert len(world.zones) == 2
-    assert len(world.npcs) == 2
-    assert len(world.events) == 1
+    assert len(world.npcs) == 3
+    assert len(world.events) == 2
     assert len(world.missions) == 2
-    assert len(world.dialogues) == 6
+    assert len(world.dialogues) == 8
     assert len(world.symptoms) == 2
     assert len(world.sources) == 3
     assert len(world.causes) == 2
@@ -413,3 +416,97 @@ def test_every_document_of_the_fixture_is_valid_json() -> None:
     """The fixture is a well formed JSON document."""
     document: Any = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     assert isinstance(document, dict)
+
+
+# ----------------------------------------------------------------------
+# The death of a villager
+# ----------------------------------------------------------------------
+
+
+def test_every_event_that_kills_references_existing_npcs(world: WorldContent) -> None:
+    """An event cannot kill somebody who is not in the world."""
+    npc_ids = {npc.id for npc in world.npcs}
+    for event in world.events:
+        for npc_id in event.deaths:
+            assert npc_id in npc_ids
+
+
+def test_the_death_of_an_npc_matches_the_event_that_kills_it(world: WorldContent) -> None:
+    """The event that kills a villager fires on the tick of the death.
+
+    The tick of the death is the tick at which the villager is already
+    gone, and the event that declares the death fires on that very tick, so
+    the two agree. A mismatch would mean the villager is gone before the
+    event that killed him, or that he survives the event that declares his
+    death.
+    """
+    activation_by_npc = {
+        npc_id: event.activation_tick for event in world.events for npc_id in event.deaths
+    }
+    for npc in world.npcs:
+        if npc.deceased_at_tick is None:
+            continue
+        assert npc.id in activation_by_npc
+        assert activation_by_npc[npc.id] == npc.deceased_at_tick
+
+
+def test_every_killed_npc_declares_the_tick_of_its_death(world: WorldContent) -> None:
+    """A villager an event kills has that tick as the tick of his death."""
+    killed = {npc_id for event in world.events for npc_id in event.deaths}
+    for npc in world.npcs:
+        if npc.id in killed:
+            assert npc.deceased_at_tick is not None
+            assert npc.death_cause
+
+
+def test_the_fixture_declares_a_programmed_death(world: WorldContent) -> None:
+    """The fixture holds a villager who dies inside the cycle.
+
+    The first programmed death of the design (D31) falls on Day 3, which is
+    the tick 192 of the cycle.
+    """
+    dying = [npc for npc in world.npcs if npc.deceased_at_tick is not None]
+    assert len(dying) == 1
+    assert dying[0].deceased_at_tick == 192
+    assert dying[0].death_cause.startswith("plague_")
+
+
+def test_the_fixture_declares_a_villager_who_survives(world: WorldContent) -> None:
+    """Most of the town survives: the death is not universal."""
+    surviving = [npc for npc in world.npcs if npc.deceased_at_tick is None]
+    assert len(surviving) == 2
+    for npc in surviving:
+        assert npc.death_cause == ""
+
+
+def test_the_death_of_the_fixture_falls_on_day_three(world: WorldContent) -> None:
+    """The tick 192 is the first tick of Day 3."""
+    assert 192 // TICKS_PER_DAY + 1 == 3
+
+
+def test_the_dead_villager_is_not_at_his_post(world: WorldContent) -> None:
+    """The simulation core agrees that the dead villager is not there."""
+    for npc in world.npcs:
+        core_npc = CoreNpc(
+            id=npc.id,
+            name=npc.name,
+            schedule=tuple(
+                CoreScheduleEntry(
+                    start_tick=entry.start_tick,
+                    end_tick=entry.end_tick,
+                    zone=entry.zone_id,
+                    tile=entry.tile,
+                    activity=entry.activity,
+                    interactable=entry.interactable,
+                )
+                for entry in npc.schedule
+            ),
+            deceased_at_tick=npc.deceased_at_tick,
+            death_cause=npc.death_cause,
+        )
+        if npc.deceased_at_tick is None:
+            assert npc_state(core_npc, npc.deceased_at_tick or 0).alive is True
+            continue
+        assert npc_state(core_npc, npc.deceased_at_tick - 1).alive is True
+        assert npc_state(core_npc, npc.deceased_at_tick).alive is False
+        assert npc_state(core_npc, npc.deceased_at_tick).interactable is False

@@ -12,6 +12,16 @@ class_name Hud
 ## The HUD is a [CanvasLayer], so it always covers the whole viewport whatever
 ## the camera of the world does. Inside it, a full-rect [Control] holds the
 ## panels.
+##
+## [b]There is no counter of the dead.[/b]
+##
+## The design decision D33 is explicit: the plague has no counter in the
+## game. The player learns how bad it is through the people — who is no
+## longer at their post, who coughs, who does not answer. So the HUD shows
+## **nothing** about the deaths: no tally, no banner, no notification. The
+## only thing the player ever sees is the empty space where somebody used
+## to stand, which is exactly what the disappearance of the NPC already
+## shows. Adding a counter here would break the design.
 
 ## Emitted when the player toggles the help overlay.
 signal help_toggled(is_open: bool)

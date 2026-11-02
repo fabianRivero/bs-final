@@ -9,6 +9,11 @@ The provisions of the town follow the same rule as the tick: an action the
 town cannot afford raises :class:`InsufficientResourcesError` and consumes
 **neither** a tick nor a resource. The town also eats on its own: the daily
 decay is applied exactly when the clock crosses a day boundary.
+
+The death of a villager follows the same rule of rejection: an action that
+targets somebody who is already dead raises :class:`InvalidActionError` and
+consumes **neither** a tick nor a resource, because talking to somebody who
+is not there is not an action.
 """
 
 from __future__ import annotations
@@ -34,12 +39,17 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "minimal_world.json"
 
 TALK_MARTA = Decision(kind="talk", target="NPC_MARTA", tick=0, payload={})
 TALK_OMAR = Decision(kind="talk", target="NPC_OMAR", tick=0, payload={})
+TALK_BAKER = Decision(kind="talk", target="NPC_BAKER", tick=0, payload={})
 REPORT = Decision(
     kind="report_symptom",
     target="NPC_MARTA",
     tick=0,
     payload={"symptom": "SYM_FEVER"},
 )
+
+#: Tick at which the baker of the fixture dies. It is the first tick of
+#: Day 3, where the first programmed death of the design (D31) falls.
+DEATH_TICK = 192
 
 #: A resource the town can afford for a couple of actions only.
 SCARCE = ResourceSpec(id="RES_FOOD", label="Food", initial=2, per_action=1, critical_at=1)
@@ -77,7 +87,7 @@ def test_state_is_derived(sim: WorldSim) -> None:
 def test_npc_states_are_derived(sim: WorldSim) -> None:
     """Every NPC of the fixture has a resolved state."""
     states = sim.npc_states()
-    assert set(states) == {"NPC_MARTA", "NPC_OMAR", "NPC_LENA"}
+    assert set(states) == {"NPC_MARTA", "NPC_OMAR", "NPC_LENA", "NPC_BAKER"}
     assert all(isinstance(state, NpcState) for state in states.values())
 
 
@@ -355,6 +365,77 @@ def test_load_rejects_npcs_that_are_not_objects(tmp_path: Path) -> None:
     broken.write_text(json.dumps({"npcs": ["NPC_X"]}), encoding="utf-8")
     with pytest.raises(WorldContentError, match="every npc must be an object"):
         WorldSim.load(broken)
+
+
+def test_load_rejects_a_non_integer_death_tick(tmp_path: Path) -> None:
+    """The tick of a death must be an integer."""
+    broken = tmp_path / "broken.json"
+    broken.write_text(
+        json.dumps(
+            {
+                "npcs": [
+                    {
+                        "id": "NPC_X",
+                        "name": "X",
+                        "schedule": [],
+                        "deceased_at_tick": "192",
+                        "death_cause": "plague_fever",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(WorldContentError, match="deceased_at_tick must be an integer"):
+        WorldSim.load(broken)
+
+
+def test_load_rejects_a_non_string_death_cause(tmp_path: Path) -> None:
+    """The cause of a death must be a string."""
+    broken = tmp_path / "broken.json"
+    broken.write_text(
+        json.dumps(
+            {
+                "npcs": [
+                    {
+                        "id": "NPC_X",
+                        "name": "X",
+                        "schedule": [],
+                        "deceased_at_tick": 192,
+                        "death_cause": 7,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(WorldContentError, match="death_cause must be a string"):
+        WorldSim.load(broken)
+
+
+def test_load_reads_the_death_of_an_npc(tmp_path: Path) -> None:
+    """The death of an NPC is part of its content."""
+    broken = tmp_path / "broken.json"
+    broken.write_text(
+        json.dumps(
+            {
+                "npcs": [
+                    {
+                        "id": "NPC_X",
+                        "name": "X",
+                        "schedule": [],
+                        "deceased_at_tick": 192,
+                        "death_cause": "plague_fever",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    sim = WorldSim.load(broken)
+    npc = sim.npc("NPC_X")
+    assert npc.deceased_at_tick == 192
+    assert npc.death_cause == "plague_fever"
 
 
 def test_load_rejects_a_missing_zone_name(tmp_path: Path) -> None:
@@ -1303,3 +1384,168 @@ def test_load_rejects_duplicated_blocked_actions(tmp_path: Path) -> None:
     )
     with pytest.raises(WorldContentError, match="duplicated blocked action kinds"):
         WorldSim.load(path)
+
+
+# ----------------------------------------------------------------------
+# The irreversible death of a villager
+# ----------------------------------------------------------------------
+
+
+def test_talking_to_a_dead_npc_is_rejected(sim: WorldSim) -> None:
+    """A villager who is already dead cannot be talked to."""
+    sim.advance_to(DEATH_TICK)
+    with pytest.raises(InvalidActionError, match="is dead"):
+        sim.advance(TALK_BAKER)
+
+
+def test_talking_to_a_dead_npc_does_not_consume_a_tick(sim: WorldSim) -> None:
+    """A rejected action leaves the clock untouched."""
+    sim.advance_to(DEATH_TICK)
+    before = sim.tick()
+    with pytest.raises(InvalidActionError, match="is dead"):
+        sim.advance(TALK_BAKER)
+    assert sim.tick() == before
+
+
+def test_talking_to_a_dead_npc_does_not_consume_the_resources(tmp_path: Path) -> None:
+    """A rejected action leaves the provisions untouched too."""
+    path = tmp_path / "world.json"
+    path.write_text(
+        json.dumps(
+            {
+                "npcs": [
+                    {
+                        "id": "NPC_BAKER",
+                        "name": "The Baker",
+                        "schedule": [
+                            {
+                                "start_tick": 0,
+                                "end_tick": 96,
+                                "zone": "ZONE_PORT",
+                                "tile": [1, 1],
+                                "activity": "selling_bread",
+                                "interactable": True,
+                            }
+                        ],
+                        "deceased_at_tick": DEATH_TICK,
+                        "death_cause": "plague_fever",
+                    }
+                ],
+                "resources": [
+                    {
+                        "id": "RES_FOOD",
+                        "label": "Food",
+                        "initial": 5,
+                        "per_action": 1,
+                        "critical_at": 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sim = WorldSim.load(path)
+    sim.advance_to(DEATH_TICK)
+    with pytest.raises(InvalidActionError, match="is dead"):
+        sim.advance(Decision(kind="talk", target="NPC_BAKER", tick=0, payload={}))
+    assert sim.resources().amount("RES_FOOD") == 5
+    assert sim.tick() == DEATH_TICK
+
+
+def test_talking_to_a_dead_npc_does_not_record_a_decision(sim: WorldSim) -> None:
+    """A rejected action is not stored."""
+    sim.advance_to(DEATH_TICK)
+    with pytest.raises(InvalidActionError, match="is dead"):
+        sim.advance(TALK_BAKER)
+    assert sim.decisions() == ()
+
+
+def test_the_error_names_the_dead_villager(sim: WorldSim) -> None:
+    """The message tells the player who is not there any more."""
+    sim.advance_to(DEATH_TICK)
+    with pytest.raises(InvalidActionError, match="The Baker is dead"):
+        sim.advance(TALK_BAKER)
+
+
+def test_a_living_npc_can_still_be_talked_to(sim: WorldSim) -> None:
+    """The death of one villager does not silence the others."""
+    sim.advance_to(DEATH_TICK)
+    sim.advance(TALK_MARTA)
+    assert sim.state().has_flag("talked:NPC_MARTA")
+
+
+def test_deaths_is_empty_before_the_death(sim: WorldSim) -> None:
+    """Nobody has died yet while the baker is still alive."""
+    sim.advance_to(DEATH_TICK - 1)
+    assert sim.deaths() == {}
+
+
+def test_deaths_reports_the_dead_villager_from_his_death_tick(sim: WorldSim) -> None:
+    """The tick of the death is the tick at which the villager is already gone."""
+    sim.advance_to(DEATH_TICK - 1)
+    assert "NPC_BAKER" not in sim.deaths()
+    sim.advance_to(DEATH_TICK)
+    assert sim.deaths() == {"NPC_BAKER": DEATH_TICK}
+
+
+def test_deaths_only_reports_the_villagers_who_died(sim: WorldSim) -> None:
+    """A living villager is never reported as dead."""
+    sim.advance_to(TOTAL_TICKS)
+    assert set(sim.deaths()) == {"NPC_BAKER"}
+
+
+def test_deaths_is_stable_after_the_death(sim: WorldSim) -> None:
+    """The death is irreversible: the report never shrinks."""
+    sim.advance_to(DEATH_TICK)
+    assert sim.deaths() == {"NPC_BAKER": DEATH_TICK}
+    sim.advance_to(TOTAL_TICKS)
+    assert sim.deaths() == {"NPC_BAKER": DEATH_TICK}
+
+
+def test_is_dead_reflects_the_tick_of_the_death(sim: WorldSim) -> None:
+    """``is_dead`` agrees with the report of the deaths."""
+    sim.advance_to(DEATH_TICK - 1)
+    assert sim.is_dead("NPC_BAKER") is False
+    assert sim.is_dead("NPC_MARTA") is False
+    sim.advance_to(DEATH_TICK)
+    assert sim.is_dead("NPC_BAKER") is True
+    assert sim.is_dead("NPC_MARTA") is False
+
+
+def test_is_dead_rejects_an_unknown_npc(sim: WorldSim) -> None:
+    """Asking about a villager that does not exist is a programming error."""
+    with pytest.raises(KeyError):
+        sim.is_dead("NPC_GHOST")
+
+
+def test_a_dead_npc_is_not_at_its_post(sim: WorldSim) -> None:
+    """The state of a dead villager is the default state, not his schedule."""
+    sim.advance_to(DEATH_TICK)
+    state = sim.npc_states()["NPC_BAKER"]
+    assert state.alive is False
+    assert state.interactable is False
+    assert state.activity == "idle"
+
+
+def test_a_dead_npc_is_not_at_its_post_even_on_his_own_tile(sim: WorldSim) -> None:
+    """The tile of the dead villager is not resolved against his schedule."""
+    sim.advance_to(DEATH_TICK)
+    state = sim.npc_states()["NPC_BAKER"]
+    assert state.zone == "default"
+    assert state.tile == (0, 0)
+
+
+def test_a_living_npc_keeps_its_post(sim: WorldSim) -> None:
+    """The death of one villager does not move the others."""
+    sim.advance_to(DEATH_TICK)
+    state = sim.npc_states()["NPC_MARTA"]
+    assert state.alive is True
+    # The tick 192 opens Day 3, which repeats the first block of the day.
+    assert state.activity == "mending_nets"
+    assert state.zone == "ZONE_PORT"
+
+
+def test_the_simulation_has_no_method_to_kill_a_villager(sim: WorldSim) -> None:
+    """The death comes from the content, never from an action of the player."""
+    assert not hasattr(sim, "kill")
+    assert not hasattr(sim, "die")

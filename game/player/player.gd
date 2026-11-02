@@ -199,6 +199,10 @@ func facing_tile() -> Vector2i:
 ## reports what is nearby. Whether the interaction is allowed at the current
 ## tick is decided by the simulation core.
 ##
+## A dead villager is skipped: they are not at their post any more, so
+## there is nobody to talk to. This mirrors `core.schedule.npc_state`, where
+## the schedule of a dead NPC is not resolved.
+##
 ## @return The id of the nearby NPC, or an empty string when there is none.
 func find_interactable_npc() -> String:
 	var candidate: Vector2i = facing_tile()
@@ -209,10 +213,28 @@ func find_interactable_npc() -> String:
 	var tick_index: int = int(game_state.tick) if game_state != null else 0
 	for npc_id in content_db.npcs.keys():
 		var npc: Dictionary = content_db.npcs[npc_id]
+		if _is_dead(npc, tick_index):
+			continue
 		var npc_tile: Vector2i = npc_tile_at(npc, tick_index)
 		if npc_tile == candidate or npc_tile == tile:
 			return String(npc_id)
 	return ""
+
+
+## Check whether an NPC is dead at the given tick.
+##
+## The tick of the death is the tick at which the villager is **already
+## gone**, so the villager is alive at `deceased_at_tick - 1` and dead at
+## `deceased_at_tick`. This mirrors `core.schedule.is_dead`.
+##
+## @param npc The NPC document.
+## @param tick_index Absolute tick index.
+## @return `true` when the NPC is dead at that tick.
+static func _is_dead(npc: Dictionary, tick_index: int) -> bool:
+	var deceased_at_tick = npc.get("deceased_at_tick", null)
+	if deceased_at_tick == null:
+		return false
+	return tick_index >= int(deceased_at_tick)
 
 
 ## Return the tile an NPC occupies at a given tick.
@@ -221,10 +243,17 @@ func find_interactable_npc() -> String:
 ## pattern repeats every day, so the tick is normalised with `tick % 96` before
 ## the lookup. This mirrors `core.schedule.npc_state`.
 ##
+## A dead villager occupies **no tile at all**: the schedule is not resolved
+## for somebody who is no longer in the world, so the answer is `(-1, -1)`,
+## the same value the function returns for an NPC without a schedule.
+##
 ## @param npc The NPC document.
 ## @param tick_index Absolute tick index.
-## @return The tile the NPC occupies, or `(-1, -1)` when it has no schedule.
+## @return The tile the NPC occupies, or `(-1, -1)` when it is dead or has
+## no schedule.
 static func npc_tile_at(npc: Dictionary, tick_index: int) -> Vector2i:
+	if _is_dead(npc, tick_index):
+		return Vector2i(-1, -1)
 	var position_in_day: int = tick_index % TICKS_PER_DAY
 	for entry in npc.get("schedule", []):
 		if entry is not Dictionary:

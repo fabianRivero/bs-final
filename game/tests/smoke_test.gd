@@ -20,6 +20,10 @@ extends SceneTree
 ## counterpart of ``tools/parity_check.py``, which does the exhaustive
 ## comparison in F5.
 ##
+## It also pins down the **irreversible death** of a villager: the tick of
+## the death is the tick at which the villager is already gone, and the
+## design decision D33 forbids any counter of the dead in the HUD.
+##
 ## Run it with:
 ## [codeblock]
 ## Godot_v4.7.2-stable_win64_console.exe --headless --path game --script res://tests/smoke_test.gd
@@ -57,6 +61,7 @@ func _init() -> void:
 	_test_content()
 	_test_resources()
 	_test_resource_rules()
+	_test_death()
 
 	print("")
 	print("=== Result: %d passed, %d failed ===" % [_passed, _failed])
@@ -395,7 +400,7 @@ func _test_content() -> void:
 
 	_check("the content document was loaded", _content_db.is_loaded)
 	_check_equal("the document holds two zones", _content_db.zones.size(), 2)
-	_check_equal("the document holds two npcs", _content_db.npcs.size(), 2)
+	_check_equal("the document holds three npcs", _content_db.npcs.size(), 3)
 	_check_equal("the document holds seven lighting phases", _content_db.lighting_phases.size(), 7)
 	_check("the document holds the premise", _content_db.content.has("premise"))
 	_check("the document holds the clock constants", _content_db.content.has("clock"))
@@ -644,5 +649,97 @@ func _test_resource_rules() -> void:
 	)
 
 	_game_state.reset()
+
+#endregion
+
+
+#region The irreversible death of a villager
+
+## Check the GDScript mirror of the death of a villager.
+##
+## The death is a fact of the world read from the content document, never a
+## decision of the player. The tick of the death is the tick at which the
+## villager is **already gone**: with `deceased_at_tick = 192` the villager
+## is alive at tick 191 and dead at tick 192.
+##
+## The design decision D33 forbids a counter of the dead: the player only
+## sees the empty space where somebody used to stand.
+func _test_death() -> void:
+	print("")
+	print("-- death --")
+
+	var baker: Dictionary = _content_db.npc("NPC_BAKER")
+	_check("the content declares the death of a villager", baker.has("deceased_at_tick"))
+	_check_equal("the villager dies at the tick 192", int(baker.get("deceased_at_tick", -1)), 192)
+	_check_equal(
+		"the cause of the death is the plague",
+		String(baker.get("death_cause", "")),
+		"plague_fever"
+	)
+
+	# The villager is alive the tick before the death...
+	_check(
+		"the villager is alive the tick before the death",
+		not _game_state.is_dead("NPC_BAKER", 191)
+	)
+	# ... and dead on the tick of the death.
+	_check(
+		"the villager is dead on the tick of the death",
+		_game_state.is_dead("NPC_BAKER", 192)
+	)
+	_check(
+		"the death is irreversible",
+		_game_state.is_dead("NPC_BAKER", 480)
+	)
+
+	# A villager without a death is alive for the whole cycle.
+	_check(
+		"a villager without a death stays alive",
+		not _game_state.is_dead("NPC_MILLER", 480)
+	)
+	_check(
+		"an unknown villager is not dead",
+		not _game_state.is_dead("NPC_GHOST", 480)
+	)
+
+	# The report of the deaths is empty before the death and grows after it.
+	_check_equal("no villager has died before the tick 192", _game_state.deaths(191).size(), 0)
+	_check_equal("one villager has died at the tick 192", _game_state.deaths(192).size(), 1)
+	_check_equal(
+		"the report names the dead villager",
+		_game_state.deaths(192).has("NPC_BAKER"),
+		true
+	)
+	_check_equal(
+		"the report carries the tick of the death",
+		int(_game_state.deaths(192)["NPC_BAKER"]),
+		192
+	)
+
+	# The agent of the dead villager is not placed and not drawn.
+	var agent: NpcAgent = NpcAgent.new()
+	agent.name = "Npc_NPC_BAKER"
+	root.add_child(agent)
+	agent.build(baker)
+
+	_check("the living villager is alive", agent.is_alive)
+	_check("the living villager is visible", agent.visible)
+	agent.refresh(191)
+	_check("the villager is alive the tick before the death", agent.is_alive)
+	_check("the villager is visible the tick before the death", agent.visible)
+
+	agent.refresh(192)
+	_check("the villager is dead on the tick of the death", not agent.is_alive)
+	_check("the villager is not drawn any more", not agent.visible)
+	_check("the villager is not interactable any more", not agent.is_interactable)
+
+	# The player cannot even target a dead villager.
+	_check(
+		"a dead villager is not a target of the player",
+		Player.npc_tile_at(baker, 192) == Vector2i(-1, -1),
+		"the tile of the dead villager is %s" % str(Player.npc_tile_at(baker, 192))
+	)
+
+	agent.queue_free()
 
 #endregion

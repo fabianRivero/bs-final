@@ -67,6 +67,28 @@ Every range in the content is **half-open**: ``start`` is inclusive and
 ``end`` is exclusive. This mirrors the convention already used by
 :mod:`core.schedule` and :mod:`core.lighting`, so the same tick never belongs
 to two blocks.
+
+Death is content, not a flag
+----------------------------
+A death is a **property of the NPC** and a **fact of the world**, never a
+decision of the player. An NPC carries the tick at which it dies
+(:attr:`Npc.deceased_at_tick`) and a label for the cause of that death
+(:attr:`Npc.death_cause`).
+
+The reason is the purity of :func:`core.state.derive`: the world is derived
+from ``(tick, decisions)``, so a death expressed as a flag would make the
+death depend on what the player chose. That is wrong. The villager dies
+because the illness takes him, not because the player did something; and the
+illness advances with the clock alone.
+
+The tick of death is the tick at which the NPC is **already gone**: an NPC
+whose ``deceased_at_tick`` is ``192`` is alive at tick 191 and dead at tick
+192. That is the same "the day of the death belongs to the death" convention
+the rest of the project uses for half-open ranges.
+
+Because the death is content and not a decision, an event may *declare* the
+deaths it causes (:attr:`Event.deaths`) without the engine applying them
+yet: the event engine is part of F4.
 """
 
 from __future__ import annotations
@@ -82,6 +104,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from core.time import TICKS_PER_DAY, total_ticks
 
 __all__ = [
+    "DEATH_CAUSE_PREFIXES",
     "Cause",
     "CauseCategory",
     "DialogueNode",
@@ -136,6 +159,27 @@ ID_PREFIXES: Mapping[str, str] = {
 
 #: Number of lighting phases the canonical table is made of.
 LIGHTING_PHASE_COUNT = 7
+
+#: Prefixes reserved for the labels of a cause of death.
+#:
+#: The cause of a death is a **free label**, not an entity with an id, so it
+#: does not belong to :data:`ID_PREFIXES`: that mapping is about identifiers
+#: that other documents point at, and nothing points at a cause of death.
+#: What the labels *do* need is a closed shape, so a typo cannot slip into
+#: the content and become an unqueryable label. The vocabulary is therefore
+#: a set of prefixes, and a label must start with one of them.
+#:
+#: The prefix says the **kind** of death, and the rest of the label says
+#: which one it was:
+#:
+#: =============  ======================================================
+#: Prefix         Kind of death
+#: =============  ======================================================
+#: ``plague_``    the illness took the villager
+#: ``exposure_``  the environment took the villager
+#: ``accident_``  an accident took the villager
+#: =============  ======================================================
+DEATH_CAUSE_PREFIXES: tuple[str, ...] = ("plague_", "exposure_", "accident_")
 
 
 class SourceKind(StrEnum):
@@ -699,6 +743,14 @@ class Npc(StrictModel):
         schedule: Blocks of the daily routine, ordered by ``start_tick``.
         dialogue_root: Id of the dialogue node the conversation starts at.
         portrait: Path of the portrait asset.
+        deceased_at_tick: Absolute tick at which the NPC dies, or ``None``
+            when it survives the whole cycle. The tick is **inclusive of the
+            death**: an NPC whose ``deceased_at_tick`` is ``192`` is alive at
+            tick 191 and already dead at tick 192.
+        death_cause: Label of the cause of the death, e.g. ``"plague_fever"``.
+            It is empty while the NPC lives, and it must be empty when
+            ``deceased_at_tick`` is ``None``: there is no cause without a
+            death, and no death without a cause.
     """
 
     id: str
@@ -707,6 +759,8 @@ class Npc(StrictModel):
     schedule: tuple[ScheduleEntry, ...] = ()
     dialogue_root: str = ""
     portrait: str | None = None
+    deceased_at_tick: int | None = None
+    death_cause: str = ""
 
     @field_validator("id")
     @classmethod
@@ -724,6 +778,81 @@ class Npc(StrictModel):
         """
         _validate_id_prefix(value, "npc", "npc.id")
         return value
+
+    @field_validator("deceased_at_tick")
+    @classmethod
+    def _check_death_tick(cls, value: int | None) -> int | None:
+        """Check that the tick of the death lies inside the cycle.
+
+        Args:
+            value: Tick to check.
+
+        Returns:
+            The validated tick.
+
+        Raises:
+            ValueError: If the tick is out of range.
+        """
+        if value is None:
+            return None
+        if not 0 <= value <= total_ticks():
+            raise ValueError(
+                f"npc.deceased_at_tick must be within [0, {total_ticks()}], got {value}"
+            )
+        return value
+
+    @field_validator("death_cause")
+    @classmethod
+    def _check_death_cause(cls, value: str) -> str:
+        """Check that the cause of the death uses the reserved vocabulary.
+
+        The empty cause is **valid on its own**: it is the default of a
+        living NPC. Whether a cause without a death is allowed is a question
+        about the *pair* of fields, so it is answered by the cross-field
+        validator of the model, not here.
+
+        Args:
+            value: Cause to check.
+
+        Returns:
+            The validated cause.
+
+        Raises:
+            ValueError: If the cause does not carry a valid prefix.
+        """
+        if not value:
+            return value
+        if not value.startswith(DEATH_CAUSE_PREFIXES):
+            raise ValueError(
+                f"npc.death_cause must start with one of {list(DEATH_CAUSE_PREFIXES)}, "
+                f"got {value!r}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _check_death_is_consistent(self) -> Self:
+        """Check that the death and its cause tell the same story.
+
+        There is no cause without a death and no death without a cause. The
+        rule is symmetric on purpose: a half-declared death is a content
+        mistake, and a content mistake is reported at load time instead of
+        producing an NPC that is somehow neither alive nor dead.
+
+        Returns:
+            The validated NPC.
+
+        Raises:
+            ValueError: If only one half of the death is declared.
+        """
+        if self.deceased_at_tick is None and self.death_cause:
+            raise ValueError(
+                f"npc {self.id}: death_cause {self.death_cause!r} requires a deceased_at_tick"
+            )
+        if self.deceased_at_tick is not None and not self.death_cause:
+            raise ValueError(
+                f"npc {self.id}: deceased_at_tick {self.deceased_at_tick} requires a death_cause"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_schedule_has_no_overlap(self) -> Self:
@@ -763,6 +892,10 @@ class Event(StrictModel):
         sets_flags: Flags raised by the event.
         precondition: Optional condition of the form ``"flag:NAME"`` that
             must hold for the event to fire.
+        deaths: Ids of the NPCs that die when the event fires. The event
+            engine that will apply them belongs to F4; the schema only
+            carries the declaration, and the cross-model validation of
+            :class:`WorldContent` checks that every id resolves.
     """
 
     id: str
@@ -774,6 +907,7 @@ class Event(StrictModel):
     effects: Mapping[str, Any] = Field(default_factory=dict)
     sets_flags: tuple[str, ...] = ()
     precondition: str | None = None
+    deaths: tuple[str, ...] = ()
 
     @field_validator("id")
     @classmethod
@@ -1456,6 +1590,9 @@ class WorldContent(StrictModel):
             for npc_id in event.npc_ids:
                 if npc_id not in npc_ids:
                     raise ValueError(f"event {event.id}: references unknown npc {npc_id!r}")
+            for npc_id in event.deaths:
+                if npc_id not in npc_ids:
+                    raise ValueError(f"event {event.id}: kills unknown npc {npc_id!r}")
 
         for symptom in self.symptoms:
             if symptom.source_npc is not None and symptom.source_npc not in npc_ids:

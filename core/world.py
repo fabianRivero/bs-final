@@ -25,6 +25,24 @@ provisions lose their ``daily_decay``, because the mine is closed and the
 stores fall whether the player acts or not. The decay is applied exactly
 once per crossing, so waiting for a whole day costs the town exactly one
 day of provisions and not one tick's worth.
+
+Death is irreversible
+---------------------
+A villager who dies stays dead. The death is a **fact of the world**, read
+from the content of the NPC (``deceased_at_tick``), and never a decision of
+the player: the simulator does not have a ``kill()`` method, because the
+illness is not something the player can invoke.
+
+The consequences of an irreversible death are visible in three places:
+
+* :meth:`npc_states` reports a dead NPC as not at its post and not
+  interactable, so the presentation layer simply stops drawing them;
+* :meth:`deaths` reports who has died up to the current tick, and
+  :meth:`is_dead` answers for a single NPC;
+* an action that targets a dead NPC is rejected **before** the clock moves,
+  with an :class:`InvalidActionError` that names the dead villager. The
+  rejection consumes neither a tick nor a resource: talking to somebody who
+  is not there is not an action.
 """
 
 from __future__ import annotations
@@ -46,7 +64,14 @@ from core.resources import (
     initial_state,
     reset_spent_today,
 )
-from core.schedule import Npc, NpcState, ScheduleEntry, npc_state, validate_schedule
+from core.schedule import (
+    Npc,
+    NpcState,
+    ScheduleEntry,
+    is_dead,
+    npc_state,
+    validate_schedule,
+)
 from core.state import Decision, WorldState, derive
 from core.time import TICKS_PER_DAY, advance, day_of
 
@@ -167,6 +192,10 @@ def _parse_schedule_entry(raw: object, npc_id: str) -> ScheduleEntry:
 def _parse_npc(raw: object) -> Npc:
     """Parse an NPC from the content document.
 
+    The optional ``deceased_at_tick`` and ``death_cause`` fields describe
+    the death of the NPC. They are content, not a decision: the simulator
+    reads them and never writes them.
+
     Args:
         raw: Raw object read from the document.
 
@@ -188,10 +217,21 @@ def _parse_npc(raw: object) -> Npc:
     if not isinstance(raw_schedule, list):
         raise WorldContentError(f"npc {npc_id}: schedule must be a list")
 
+    deceased_at_tick = raw.get("deceased_at_tick")
+    if deceased_at_tick is not None and (
+        not isinstance(deceased_at_tick, int) or isinstance(deceased_at_tick, bool)
+    ):
+        raise WorldContentError(f"npc {npc_id}: deceased_at_tick must be an integer")
+    death_cause = raw.get("death_cause", "")
+    if not isinstance(death_cause, str):
+        raise WorldContentError(f"npc {npc_id}: death_cause must be a string")
+
     npc = Npc(
         id=npc_id,
         name=name,
         schedule=tuple(_parse_schedule_entry(entry, npc_id) for entry in raw_schedule),
+        deceased_at_tick=deceased_at_tick,
+        death_cause=death_cause,
     )
     try:
         validate_schedule(npc)
@@ -433,10 +473,48 @@ class WorldSim:
     def npc_states(self) -> dict[str, NpcState]:
         """Return the state of every NPC at the current tick.
 
+        A dead NPC is not at its post and not interactable, so the
+        presentation layer can simply skip it: the villager is no longer
+        there.
+
         Returns:
             The NPC states, keyed by NPC id.
         """
         return {npc_id: npc_state(npc, self._tick) for npc_id, npc in self._npcs.items()}
+
+    def deaths(self) -> dict[str, int]:
+        """Return the NPCs that are dead at the current tick.
+
+        The death of a villager is irreversible, so this map only ever grows
+        while the clock moves forward. An NPC that dies at tick 192 does
+        **not** appear here at tick 191: the tick of the death is the tick at
+        which the NPC is already gone.
+
+        The map is a **read**: the simulator never mutates it, because the
+        death comes from the content of the NPC, not from an action.
+
+        Returns:
+            The tick of the death of every dead NPC, keyed by NPC id.
+        """
+        return {
+            npc_id: npc.deceased_at_tick
+            for npc_id, npc in self._npcs.items()
+            if npc.deceased_at_tick is not None and npc.deceased_at_tick <= self._tick
+        }
+
+    def is_dead(self, npc_id: str) -> bool:
+        """Check whether an NPC is dead at the current tick.
+
+        Args:
+            npc_id: Id of the NPC.
+
+        Returns:
+            ``True`` when the NPC is dead at the current tick.
+
+        Raises:
+            KeyError: If no NPC has that id.
+        """
+        return is_dead(self._npcs[npc_id], self._tick)
 
     def light(self) -> LightState:
         """Return the lighting of the world at the current tick.
@@ -560,6 +638,9 @@ class WorldSim:
     def _validate_action(self, action: Decision) -> None:
         """Check that an action can be performed at the current tick.
 
+        The checks run **before** anything moves, so a rejected action
+        consumes neither the tick nor the provisions.
+
         Args:
             action: Decision to validate.
 
@@ -575,6 +656,8 @@ class WorldSim:
             npc = self._npcs.get(action.target)
             if npc is None:
                 raise InvalidActionError(f"unknown npc: {action.target!r}")
+            if is_dead(npc, self._tick):
+                raise InvalidActionError(f"{npc.name} is dead")
             if not npc_state(npc, self._tick).interactable:
                 raise InvalidActionError(
                     f"{action.target} is not interactable at tick {self._tick}"
