@@ -166,11 +166,31 @@ def test_export_web_carries_the_resources(tmp_path: Path) -> None:
     document = json.loads(destination.read_text(encoding="utf-8"))
 
     resources = document["resources"]
-    assert len(resources) == 2
+    assert len(resources) == 3
     assert resources[0]["id"] == "RES_FOOD"
-    assert resources[0]["initial"] == 40
+    assert resources[0]["initial"] == 24
     assert resources[0]["per_action"] == 1
-    assert resources[0]["critical_at"] == 10
+    assert resources[0]["critical_at"] == 6
+
+
+def test_export_web_carries_the_new_resource_fields(tmp_path: Path) -> None:
+    """The contract carries the decay and the gated actions of every resource.
+
+    The GDScript mirror of ``core/resources.py`` needs both fields to
+    reproduce the daily decay and the cost multiplier of a critical
+    resource.
+    """
+    destination = tmp_path / "game_content.json"
+    export_web.main(["--game-content", str(destination)])
+    document = json.loads(destination.read_text(encoding="utf-8"))
+
+    by_id = {resource["id"]: resource for resource in document["resources"]}
+    assert by_id["RES_FOOD"]["daily_decay"] == 2
+    assert by_id["RES_FOOD"]["blocks_actions"] == []
+    assert by_id["RES_MEDICINE"]["daily_decay"] == 1
+    assert by_id["RES_MEDICINE"]["blocks_actions"] == ["treat_sick"]
+    assert by_id["RES_FUEL"]["daily_decay"] == 1
+    assert by_id["RES_FUEL"]["blocks_actions"] == ["prepare_sample"]
 
 
 def test_export_web_is_deterministic(tmp_path: Path) -> None:

@@ -612,16 +612,33 @@
     {
       "id": "RES_FOOD",
       "label": "Food",
-      "initial": 40,
+      "initial": 24,
       "per_action": 1,
-      "critical_at": 10
+      "critical_at": 6,
+      "daily_decay": 2,
+      "blocks_actions": []
     },
     {
       "id": "RES_MEDICINE",
       "label": "Medicine",
-      "initial": 12,
-      "per_action": 2,
-      "critical_at": 4
+      "initial": 10,
+      "per_action": 1,
+      "critical_at": 3,
+      "daily_decay": 1,
+      "blocks_actions": [
+        "treat_sick"
+      ]
+    },
+    {
+      "id": "RES_FUEL",
+      "label": "Fuel",
+      "initial": 8,
+      "per_action": 1,
+      "critical_at": 2,
+      "daily_decay": 1,
+      "blocks_actions": [
+        "prepare_sample"
+      ]
     }
   ],
   "rumors": [

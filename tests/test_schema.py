@@ -831,7 +831,39 @@ def test_resource_spec_accepts_a_valid_definition() -> None:
     assert resource.critical_at == 3
 
 
-@pytest.mark.parametrize("field", ["initial", "per_action", "critical_at"])
+def test_resource_spec_defaults_the_new_fields() -> None:
+    """A provision without the new fields says it does not decay."""
+    resource = ResourceSpec.model_validate(
+        {
+            "id": "RES_FOOD",
+            "label": "Food",
+            "initial": 10,
+            "per_action": 1,
+            "critical_at": 3,
+        }
+    )
+    assert resource.daily_decay == 0
+    assert resource.blocks_actions == ()
+
+
+def test_resource_spec_accepts_the_new_fields() -> None:
+    """A provision may declare its decay and the actions it gates."""
+    resource = ResourceSpec.model_validate(
+        {
+            "id": "RES_FUEL",
+            "label": "Fuel",
+            "initial": 8,
+            "per_action": 1,
+            "critical_at": 2,
+            "daily_decay": 1,
+            "blocks_actions": ["prepare_sample"],
+        }
+    )
+    assert resource.daily_decay == 1
+    assert resource.blocks_actions == ("prepare_sample",)
+
+
+@pytest.mark.parametrize("field", ["initial", "per_action", "critical_at", "daily_decay"])
 def test_resource_spec_rejects_negative_amounts(field: str) -> None:
     """A negative quantity is not a stock the town can hold."""
     document = {
@@ -856,6 +888,50 @@ def test_resource_spec_rejects_an_unreachable_threshold() -> None:
                 "initial": 5,
                 "per_action": 1,
                 "critical_at": 9,
+            }
+        )
+
+
+def test_resource_spec_rejects_duplicated_blocked_actions() -> None:
+    """A gated action must not be listed twice."""
+    with pytest.raises(ValidationError, match="duplicated kinds"):
+        ResourceSpec.model_validate(
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 8,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": ["prepare_sample", "prepare_sample"],
+            }
+        )
+
+
+def test_resource_spec_rejects_an_empty_blocked_action() -> None:
+    """A gated action must name something."""
+    with pytest.raises(ValidationError, match="non-empty action kinds"):
+        ResourceSpec.model_validate(
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 8,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": [""],
+            }
+        )
+
+
+def test_resource_spec_rejects_an_id_without_the_reserved_prefix() -> None:
+    """Every provision carries the prefix reserved for resources."""
+    with pytest.raises(ValidationError, match="RES_"):
+        ResourceSpec.model_validate(
+            {
+                "id": "FOOD",
+                "label": "Food",
+                "initial": 10,
+                "per_action": 1,
+                "critical_at": 3,
             }
         )
 
@@ -885,7 +961,7 @@ def test_world_content_rejects_duplicated_resource_ids(valid_world: WorldContent
 
 def test_world_content_accepts_resources(valid_world: WorldContent) -> None:
     """The root document carries the provisions of the town."""
-    assert len(valid_world.resources) == 2
+    assert len(valid_world.resources) == 3
     assert valid_world.resources[0].id == "RES_FOOD"
 
 

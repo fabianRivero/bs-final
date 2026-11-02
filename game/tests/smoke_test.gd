@@ -56,6 +56,7 @@ func _init() -> void:
 	_test_lighting()
 	_test_content()
 	_test_resources()
+	_test_resource_rules()
 
 	print("")
 	print("=== Result: %d passed, %d failed ===" % [_passed, _failed])
@@ -407,7 +408,7 @@ func _test_content() -> void:
 		_check_equal("the clock holds the total ticks", clock["total_ticks"], 480)
 
 	_check("the document holds the resources", _content_db.content.has("resources"))
-	_check_equal("the document holds two resources", _content_db.resources.size(), 2)
+	_check_equal("the document holds three resources", _content_db.resources.size(), 3)
 
 	var zone_id: String = _content_db.first_zone_id()
 	_check("a zone can be selected", not zone_id.is_empty())
@@ -445,39 +446,60 @@ func _test_content() -> void:
 ##
 ## The amounts are the ones the exported content document declares, and the
 ## consumption mirrors `core.resources.consume`: the amounts are clamped to
-## zero instead of going negative.
+## zero instead of going negative. The mirror also reproduces the two extra
+## rules of the system: a critical resource doubles the price of the action
+## it gates, and a depleted one refuses it outright.
 func _test_resources() -> void:
 	print("")
 	print("-- resources --")
 
-	_check_equal("the autoload holds two resources", _game_state.resources.size(), 2)
+	_check_equal("the autoload holds three resources", _game_state.resources.size(), 3)
 
 	var food_amount: int = _game_state.resource_amount("RES_FOOD")
-	_check_equal("the food starts at its initial amount", food_amount, 40)
+	_check_equal("the food starts at its initial amount", food_amount, 24)
 	_check_equal(
 		"the medicine starts at its initial amount",
 		_game_state.resource_amount("RES_MEDICINE"),
-		12
+		10
+	)
+	_check_equal(
+		"the fuel starts at its initial amount",
+		_game_state.resource_amount("RES_FUEL"),
+		8
 	)
 	_check("the town can afford an action at the start", _game_state.can_afford_action())
 	_check("no resource is in crisis at the start", _game_state.resource_crisis().is_empty())
 
+	# The exported document carries the two new fields.
+	var fuel_spec: Dictionary = _game_state.resources.get("RES_FUEL", {})
+	_check_equal("the fuel declares its daily decay", fuel_spec.get("daily_decay", -1), 1)
+	_check_equal(
+		"the fuel gates the preparation of the sample",
+		fuel_spec.get("blocks_actions", []),
+		["prepare_sample"]
+	)
+
 	# Consuming an action draws on the stores.
-	_game_state.consume_action_resources()
+	_game_state.consume_action_resources("talk")
 	_check_equal(
 		"an action costs one unit of food",
 		_game_state.resource_amount("RES_FOOD"),
-		39
+		23
 	)
 	_check_equal(
-		"an action costs two units of medicine",
+		"an action costs one unit of medicine",
 		_game_state.resource_amount("RES_MEDICINE"),
-		10
+		9
+	)
+	_check_equal(
+		"the amount spent today is recorded",
+		_game_state.resource_spent_today("RES_FOOD"),
+		1
 	)
 
 	# The amounts are clamped to zero: a resource never goes negative.
 	for _i in range(30):
-		_game_state.consume_action_resources()
+		_game_state.consume_action_resources("talk")
 	_check(
 		"the food never goes negative",
 		_game_state.resource_amount("RES_FOOD") >= 0
@@ -514,7 +536,113 @@ func _test_resources() -> void:
 	_check_equal(
 		"the reset restores the initial amount",
 		_game_state.resource_amount("RES_FOOD"),
-		40
+		24
 	)
+	_check_equal(
+		"the reset clears the daily spending",
+		_game_state.resource_spent_today("RES_FOOD"),
+		0
+	)
+
+#endregion
+
+
+#region The critical multiplier and the blocked actions
+
+## Check that the GDScript mirror reproduces the two extra rules of the
+## provisions: a critical resource doubles the price of the action it gates,
+## and a depleted one refuses it outright.
+func _test_resource_rules() -> void:
+	print("")
+	print("-- resource rules --")
+
+	# The fuel starts at 8 with a threshold of 2. The threshold is
+	# exclusive, so the fuel is healthy at 2 and becomes critical at 1:
+	# seven plain preparations bring it down to 1.
+	_check_equal("the fuel starts healthy", _game_state.resource_state("RES_FUEL"), "healthy")
+	for _i in range(7):
+		_game_state.consume_action_resources("prepare_sample")
+	_check_equal(
+		"the fuel is below its threshold after seven preparations",
+		_game_state.resource_amount("RES_FUEL"),
+		1
+	)
+	_check_equal(
+		"the fuel is in crisis after seven preparations",
+		_game_state.resource_state("RES_FUEL"),
+		"critical"
+	)
+
+	# Below the threshold the price doubles: 1 - 2 is clamped to 0.
+	_game_state.consume_action_resources("prepare_sample")
+	_check_equal(
+		"a critical resource doubles the price of the action it gates",
+		_game_state.resource_amount("RES_FUEL"),
+		0
+	)
+	_check_equal(
+		"the doubled price is recorded in the daily spending",
+		_game_state.resource_spent_today("RES_FUEL"),
+		9
+	)
+	_check_equal(
+		"a depleted resource is reported as depleted",
+		_game_state.resource_state("RES_FUEL"),
+		"depleted"
+	)
+
+	# A depleted resource refuses the action it gates.
+	_check(
+		"a depleted resource blocks the action it gates",
+		not _game_state.can_afford_kind("prepare_sample")
+	)
+
+	# The decay of the town is applied when a day passes.
+	_game_state.reset()
+	_game_state.tick = 95
+	_game_state.advance_steps(1)
+	_check_equal("the clock crossed into Day 2", _game_state.tick, 96)
+	_check_equal(
+		"the food decays by two units when the day crosses",
+		_game_state.resource_amount("RES_FOOD"),
+		22
+	)
+	_check_equal(
+		"the medicine decays by one unit when the day crosses",
+		_game_state.resource_amount("RES_MEDICINE"),
+		9
+	)
+	_check_equal(
+		"the fuel decays by one unit when the day crosses",
+		_game_state.resource_amount("RES_FUEL"),
+		7
+	)
+	_check_equal(
+		"the daily spending is reset when the day crosses",
+		_game_state.resource_spent_today("RES_FOOD"),
+		0
+	)
+
+	# The decay happens once per crossing, never per tick.
+	_game_state.advance_steps(95)
+	_check_equal("the clock is back at the end of Day 2", _game_state.tick, 191)
+	_check_equal(
+		"no second decay happened inside the day",
+		_game_state.resource_amount("RES_FOOD"),
+		22
+	)
+
+	# The state of the provisions is published as a whole.
+	var state: Dictionary = _game_state.resources_state()
+	_check("the published state holds the amounts", state.has("amounts"))
+	_check("the published state holds the daily spending", state.has("spent_today"))
+	_check("the published state holds the state of every resource", state.has("states"))
+	_check_equal(
+		"the published amount of the food is the current one",
+		state["amounts"]["RES_FOOD"],
+		_game_state.resource_amount("RES_FOOD")
+	)
+
+	_game_state.reset()
 
 #endregion

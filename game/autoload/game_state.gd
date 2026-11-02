@@ -58,8 +58,19 @@ const CYCLE_DAYS: int = 5
 ## Number of ticks in the full playable cycle. Mirrors `core.time.TOTAL_TICKS`.
 const TOTAL_TICKS: int = 480
 
+## Multiplier applied to the price of the actions a critical resource gates.
+## Mirrors `core.resources.CRITICAL_COST_MULTIPLIER`.
+const CRITICAL_COST_MULTIPLIER: int = 2
+
 ## Current tick of the run, in `[0, TOTAL_TICKS]`.
 var tick: int = 0
+
+## Number of day boundaries the run has crossed.
+##
+## The town eats when the clock crosses a day boundary, so the autoload
+## remembers how many times it happened to apply the decay exactly once
+## per crossing.
+var _decayed_days: int = 0
 
 ## Decisions taken so far, in chronological order.
 ##
@@ -73,6 +84,12 @@ var decisions: Array[Dictionary] = []
 ## simulation core decided on: this autoload only mirrors the consumption so
 ## that the HUD can show them.
 var _resources: Dictionary = {}
+
+## Amount spent today on each resource, keyed by resource id.
+##
+## Mirrors `core.resources.ResourceState.spent_today`. It is reset when the
+## clock crosses a day boundary.
+var _spent_today: Dictionary = {}
 
 ## Whether the provisions were already read from the content document.
 var _resources_loaded: bool = false
@@ -272,6 +289,7 @@ func _ensure_resources() -> void:
 ## @param specs The `resources` array of the exported content document.
 func load_resources(specs: Array) -> void:
 	_resources.clear()
+	_spent_today.clear()
 	_resources_loaded = true
 	for raw in specs:
 		if not (raw is Dictionary):
@@ -279,14 +297,20 @@ func load_resources(specs: Array) -> void:
 		var resource_id: String = String(raw.get("id", ""))
 		if resource_id.is_empty():
 			continue
+		var blocks: Variant = raw.get("blocks_actions", [])
+		if not (blocks is Array) and not (blocks is PackedStringArray):
+			blocks = []
 		_resources[resource_id] = {
 			"id": resource_id,
 			"label": String(raw.get("label", resource_id)),
 			"initial": int(raw.get("initial", 0)),
 			"per_action": int(raw.get("per_action", 0)),
 			"critical_at": int(raw.get("critical_at", 0)),
+			"daily_decay": int(raw.get("daily_decay", 0)),
+			"blocks_actions": blocks,
 			"amount": int(raw.get("initial", 0)),
 		}
+		_spent_today[resource_id] = 0
 
 
 ## Return the amount held of a resource.
@@ -297,6 +321,60 @@ func resource_amount(resource_id: String) -> int:
 	if not _resources.has(resource_id):
 		return 0
 	return int(_resources[resource_id].get("amount", 0))
+
+
+## Return the amount spent today on a resource.
+##
+## Mirrors `core.resources.ResourceState.spent_on`.
+##
+## @param resource_id Id of the resource.
+## @return The amount spent today, or 0 when the resource is not tracked.
+func resource_spent_today(resource_id: String) -> int:
+	if not _spent_today.has(resource_id):
+		return 0
+	return int(_spent_today[resource_id])
+
+
+## Return the current state of the provisions.
+##
+## Mirrors `core.resources.ResourceState`: the amounts, the amount spent
+## today on each resource, and the state of each resource.
+##
+## @return A dictionary with the keys `amounts`, `spent_today` and `states`.
+func resources_state() -> Dictionary:
+	_ensure_resources()
+	var amounts: Dictionary = {}
+	var spent: Dictionary = {}
+	var states: Dictionary = {}
+	for resource_id in _resources.keys():
+		var key: String = String(resource_id)
+		amounts[key] = resource_amount(key)
+		spent[key] = resource_spent_today(key)
+		states[key] = resource_state(key)
+	return {
+		"amounts": amounts,
+		"spent_today": spent,
+		"states": states,
+	}
+
+
+## Return the state of a resource: `healthy`, `critical` or `depleted`.
+##
+## A resource is **critical** when its amount fell strictly below the
+## `critical_at` threshold of its specification, exactly like
+## `core.resources.ResourceState.is_critical`. A resource that reached zero
+## is **depleted** and cannot pay for anything any more.
+##
+## @param resource_id Id of the resource.
+## @return One of `"healthy"`, `"critical"` or `"depleted"`.
+func resource_state(resource_id: String) -> String:
+	if not _resources.has(resource_id):
+		return "healthy"
+	if resource_amount(resource_id) <= 0:
+		return "depleted"
+	if is_resource_critical(resource_id):
+		return "critical"
+	return "healthy"
 
 
 ## Check whether a resource is in a critical state.
@@ -329,37 +407,113 @@ func resource_crisis() -> PackedStringArray:
 
 ## Check whether the town can pay for one more action.
 ##
-## Mirrors `core.resources.can_afford`.
+## Mirrors `core.resources.can_afford` with a `null` kind: every tracked
+## resource is charged its plain per-action price.
 ##
 ## @return `true` when every tracked resource covers the cost of one action.
 func can_afford_action() -> bool:
+	return can_afford_kind("")
+
+
+## Check whether the town can pay for one action of the given kind.
+##
+## Mirrors `core.resources.can_afford` with a kind: a resource that gates the
+## action and is depleted refuses it, and a resource that gates the action
+## and is in crisis doubles its price.
+##
+## @param kind Kind of action, e.g. `"prepare_sample"`. An empty string
+## behaves like no kind at all.
+## @return `true` when the town can pay for one action of that kind.
+func can_afford_kind(kind: String) -> bool:
 	_ensure_resources()
+	var action_kind: String = "" if kind.is_empty() else kind
 	for resource_id in _resources.keys():
-		var spec: Dictionary = _resources[resource_id]
-		if resource_amount(String(resource_id)) < int(spec.get("per_action", 0)):
+		var key: String = String(resource_id)
+		var spec: Dictionary = _resources[key]
+		if _resource_blocks(spec, action_kind) and resource_amount(key) <= 0:
+			return false
+	for resource_id in _resources.keys():
+		var key: String = String(resource_id)
+		var spec: Dictionary = _resources[key]
+		if resource_amount(key) < _resource_cost(spec, action_kind):
 			return false
 	return true
+
+
+## Check whether a resource gates an action of the given kind.
+##
+## Mirrors `core.resources.ResourceSpec.blocks`.
+##
+## @param spec The specification of the resource.
+## @param kind Kind of action, e.g. `"prepare_sample"`.
+## @return `true` when the resource declares that kind.
+func _resource_blocks(spec: Dictionary, kind: String) -> bool:
+	if kind.is_empty():
+		return false
+	var blocks = spec.get("blocks_actions", [])
+	if not (blocks is Array) and not (blocks is PackedStringArray):
+		return false
+	return blocks.has(kind)
+
+
+## Return the price of one action for a resource.
+##
+## Mirrors `core.resources._cost_of`: a resource that gates the action and
+## is in crisis doubles its price, everything else costs its plain
+## per-action price.
+##
+## @param spec The specification of the resource.
+## @param kind Kind of action, e.g. `"prepare_sample"`.
+## @return The amount the action costs of that resource.
+func _resource_cost(spec: Dictionary, kind: String) -> int:
+	var cost: int = int(spec.get("per_action", 0))
+	if _resource_blocks(spec, kind) and is_resource_critical(String(spec.get("id", ""))):
+		return cost * CRITICAL_COST_MULTIPLIER
+	return cost
 
 
 ## Consume the provisions of one action.
 ##
 ## Mirrors `core.resources.consume`: the amounts are clamped to zero, so a
 ## resource that cannot cover its cost ends up depleted rather than negative.
+## The amount spent is recorded so the HUD can show the shape of the day.
 ##
+## @param kind Kind of action being paid for, e.g. `"prepare_sample"`.
 ## @return The ids of the resources that ran out.
-func consume_action_resources() -> PackedStringArray:
+func consume_action_resources(kind: String = "") -> PackedStringArray:
 	_ensure_resources()
 	var depleted: PackedStringArray = PackedStringArray()
 	for resource_id in _resources.keys():
 		var key: String = String(resource_id)
 		var spec: Dictionary = _resources[key]
-		var remaining: int = resource_amount(key) - int(spec.get("per_action", 0))
+		var cost: int = _resource_cost(spec, kind)
+		var remaining: int = resource_amount(key) - cost
 		spec["amount"] = maxi(0, remaining)
 		_resources[key] = spec
+		_spent_today[key] = resource_spent_today(key) + cost
 		if int(spec["amount"]) <= 0:
 			depleted.append(key)
 	depleted.sort()
 	return depleted
+
+
+## Apply the decay the town suffers when a day passes.
+##
+## Mirrors `core.resources.apply_daily_decay`: the town eats on its own,
+## because the mine is closed and nothing comes in. The decay is applied
+## when the clock crosses a day boundary, never per tick.
+##
+## The daily spending is reset at the same time, because the HUD reports the
+## spending of the current day.
+func apply_daily_decay() -> void:
+	_ensure_resources()
+	for resource_id in _resources.keys():
+		var key: String = String(resource_id)
+		var spec: Dictionary = _resources[key]
+		var decay: int = int(spec.get("daily_decay", 0))
+		spec["amount"] = maxi(0, resource_amount(key) - decay)
+		_resources[key] = spec
+		_spent_today[key] = 0
 
 #endregion
 
@@ -395,8 +549,11 @@ func apply_decision(kind: String, target: String = "", payload: Dictionary = {})
 ##
 ## The provisions of the town are consumed **per action**, not per tick:
 ## waiting burns time without drawing on the stores, but every real action
-## pays its cost. An action the town cannot afford is refused and consumes
-## neither the tick nor the provisions, mirroring
+## pays its cost. The price depends on the kind of the action: a resource
+## that gates that kind and is in crisis doubles its price, and a resource
+## that gates that kind and is depleted refuses the action outright. An
+## action the town cannot afford is refused and consumes neither the tick
+## nor the provisions, mirroring
 ## `core.world.InsufficientResourcesError`.
 ##
 ## @param kind Kind of action, e.g. `"talk"`.
@@ -408,13 +565,14 @@ func advance(kind: String, target: String = "", payload: Dictionary = {}) -> Dic
 		push_warning("cannot advance past the cycle end (tick %d)" % TOTAL_TICKS)
 		return _state
 
-	if not can_afford_action():
+	if not can_afford_kind(kind):
 		push_warning("the town cannot afford this action")
 		return _state
 
 	apply_decision(kind, target, payload)
-	consume_action_resources()
+	consume_action_resources(kind)
 	tick += 1
+	_apply_day_crossing()
 	_rederive()
 	tick_changed.emit(tick, _state)
 	if tick >= TOTAL_TICKS:
@@ -433,11 +591,25 @@ func advance_steps(steps: int = 1) -> Dictionary:
 	while moved < steps and tick < TOTAL_TICKS:
 		tick += 1
 		moved += 1
+		_apply_day_crossing()
 	_rederive()
 	tick_changed.emit(tick, _state)
 	if tick >= TOTAL_TICKS:
 		cycle_closed.emit(tick)
 	return _state
+
+
+## Apply the decay of the town when the clock crossed a day boundary.
+##
+## Mirrors `core.world.WorldSim._apply_day_crossing`: the decay happens once
+## per crossing and never per tick, and the daily spending is reset at the
+## same time.
+func _apply_day_crossing() -> void:
+	var day_index: int = tick / TICKS_PER_DAY
+	if day_index <= _decayed_days:
+		return
+	apply_daily_decay()
+	_decayed_days = day_index
 
 
 ## Reset the run to its initial state.
@@ -446,9 +618,12 @@ func reset() -> void:
 	decisions.clear()
 	_ensure_resources()
 	for resource_id in _resources.keys():
-		var spec: Dictionary = _resources[resource_id]
+		var key: String = String(resource_id)
+		var spec: Dictionary = _resources[key]
 		spec["amount"] = int(spec.get("initial", 0))
-		_resources[resource_id] = spec
+		_resources[key] = spec
+		_spent_today[key] = 0
+	_decayed_days = 0
 	_rederive()
 	decisions_changed.emit(decisions)
 	tick_changed.emit(tick, _state)

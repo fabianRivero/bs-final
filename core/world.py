@@ -19,6 +19,12 @@ tick**, which matches the rule that bumping into a wall is not an action.
 An action the town cannot afford raises :class:`InsufficientResourcesError`
 and consumes **neither** a tick nor a resource: the player is not allowed to
 act on provisions that do not exist.
+
+The town also eats on its own. When the clock **crosses a day boundary** the
+provisions lose their ``daily_decay``, because the mine is closed and the
+stores fall whether the player acts or not. The decay is applied exactly
+once per crossing, so waiting for a whole day costs the town exactly one
+day of provisions and not one tick's worth.
 """
 
 from __future__ import annotations
@@ -33,14 +39,16 @@ from core.lighting import LightState, light_state_at
 from core.resources import (
     ResourceSpec,
     ResourceState,
+    apply_daily_decay,
     can_afford,
     consume,
     derive_crisis,
     initial_state,
+    reset_spent_today,
 )
 from core.schedule import Npc, NpcState, ScheduleEntry, npc_state, validate_schedule
 from core.state import Decision, WorldState, derive
-from core.time import advance
+from core.time import TICKS_PER_DAY, advance, day_of
 
 __all__ = [
     "InsufficientResourcesError",
@@ -218,8 +226,12 @@ def _parse_zone(raw: object) -> Zone:
 def _parse_resource_spec(raw: object) -> ResourceSpec:
     """Parse a resource specification from the content document.
 
+    The optional ``daily_decay`` and ``blocks_actions`` fields default to
+    ``0`` and an empty tuple, so a document written before those fields
+    existed still loads.
+
     Args:
-        raw: Raw object read from the document.
+        raw: Raw object read from the content document.
 
     Returns:
         The parsed specification.
@@ -243,6 +255,14 @@ def _parse_resource_spec(raw: object) -> ResourceSpec:
             raise WorldContentError(f"resource {resource_id}: {field_name} must be an integer")
         amounts[field_name] = value
 
+    daily_decay = raw.get("daily_decay", 0)
+    if not isinstance(daily_decay, int) or isinstance(daily_decay, bool):
+        raise WorldContentError(f"resource {resource_id}: daily_decay must be an integer")
+
+    raw_blocks = raw.get("blocks_actions", [])
+    if not isinstance(raw_blocks, list) or not all(isinstance(kind, str) for kind in raw_blocks):
+        raise WorldContentError(f"resource {resource_id}: blocks_actions must be a list of strings")
+
     try:
         return ResourceSpec(
             id=resource_id,
@@ -250,6 +270,8 @@ def _parse_resource_spec(raw: object) -> ResourceSpec:
             initial=amounts["initial"],
             per_action=amounts["per_action"],
             critical_at=amounts["critical_at"],
+            daily_decay=daily_decay,
+            blocks_actions=tuple(raw_blocks),
         )
     except ValueError as error:
         raise WorldContentError(str(error)) from error
@@ -288,6 +310,7 @@ class WorldSim:
         self._tick = 0
         self._decisions: list[Decision] = []
         self._resources: ResourceState = initial_state(self._resource_specs)
+        self._decayed_days: int = 0
 
     @classmethod
     def load(cls, path: str | Path) -> WorldSim:
@@ -371,6 +394,34 @@ class WorldSim:
         """
         return derive_crisis(self._resources, self._resource_specs)
 
+    def can_afford(self, kind: str) -> bool:
+        """Check whether the town can pay for one action of the given kind.
+
+        The check accounts for the two extra rules of the provisions: a
+        depleted resource blocks the actions it gates, and a critical
+        resource makes them cost twice as much.
+
+        Args:
+            kind: Kind of action, e.g. ``"prepare_sample"``.
+
+        Returns:
+            ``True`` when the town can pay for one action of that kind.
+        """
+        return can_afford(self._resources, self._resource_specs, actions=1, kind=kind)
+
+    def day(self) -> int:
+        """Return the day number the simulation is positioned at.
+
+        The day is derived from the tick, exactly like
+        :attr:`core.state.WorldState.day`: the cycle opens on Day 1 and the
+        closing tick 480 belongs to Day 6, the day after the last playable
+        one.
+
+        Returns:
+            The 1-based day number, from 1 to 6.
+        """
+        return day_of(self._tick)
+
     def state(self) -> WorldState:
         """Return the derived state of the world.
 
@@ -439,7 +490,16 @@ class WorldSim:
 
         The resources are consumed **per action**, not per tick. Waiting
         advances the clock without drawing on the provisions, but every real
-        action pays its cost.
+        action pays its cost. The cost of the action depends on its ``kind``:
+        a resource that gates that kind and is in crisis is charged twice as
+        much, and a resource that gates that kind and is depleted refuses the
+        action outright.
+
+        When the clock **crosses a day boundary**, the town eats: every
+        resource loses its ``daily_decay`` and the daily spending is reset.
+        The decay happens exactly once per crossing, so the tick 96 opens
+        Day 2 with the decay of Day 1 already applied, and the closing tick
+        480 opens Day 6 with the decay of the fifth crossing applied.
 
         Args:
             action: Decision taken by the player. Its ``tick`` field is
@@ -457,7 +517,7 @@ class WorldSim:
             ClockOverflowError: If the cycle has already been closed.
         """
         self._validate_action(action)
-        self._validate_resources()
+        self._validate_resources(action.kind)
         new_tick = advance(self._tick)
         decision = Decision(
             kind=action.kind,
@@ -467,8 +527,35 @@ class WorldSim:
         )
         self._decisions.append(decision)
         self._tick = new_tick
-        self._resources = consume(self._resources, self._resource_specs)
+        self._resources = consume(
+            self._resources, self._resource_specs, actions=1, kind=action.kind
+        )
+        self._apply_day_crossing()
         return self.state()
+
+    def _apply_day_crossing(self) -> None:
+        """Apply the daily decay when the clock crossed a day boundary.
+
+        The decay is the town eating on its own: the mine is closed, so
+        nothing comes in and the stores fall every day. It is applied once
+        per crossing of a day boundary and never per tick: moving from tick
+        95 to tick 96 opens Day 2 and applies one day of decay, while moving
+        from tick 10 to tick 11 crosses nothing and applies nothing.
+
+        The daily spending is reset at the same time, because the HUD
+        reports the spending of the *current* day.
+
+        The order is deterministic: the action that crosses the boundary is
+        paid at its usual price, and the decay of the new day is applied
+        afterwards. A player who acts on the last tick of a day and a player
+        who waits for it reach the same stock.
+        """
+        day_index = self._tick // TICKS_PER_DAY
+        if day_index <= self._decayed_days:
+            return
+        self._resources = apply_daily_decay(self._resources, self._resource_specs, days=1)
+        self._resources = reset_spent_today(self._resources)
+        self._decayed_days = day_index
 
     def _validate_action(self, action: Decision) -> None:
         """Check that an action can be performed at the current tick.
@@ -493,19 +580,27 @@ class WorldSim:
                     f"{action.target} is not interactable at tick {self._tick}"
                 )
 
-    def _validate_resources(self) -> None:
+    def _validate_resources(self, kind: str) -> None:
         """Check that the town can pay for one more action.
+
+        The check accounts for the kind of the action: a resource that gates
+        that kind and is depleted refuses the action outright, and a
+        resource that gates that kind and is in crisis doubles its price.
+
+        Args:
+            kind: Kind of action the player wants to perform.
 
         Raises:
             InsufficientResourcesError: If a resource does not hold enough
                 to cover the cost of a single action.
         """
-        if can_afford(self._resources, self._resource_specs):
+        if can_afford(self._resources, self._resource_specs, actions=1, kind=kind):
             return
         exhausted = tuple(
             spec.id
             for spec in self._resource_specs
             if self._resources.amount(spec.id) < spec.per_action
+            or (spec.blocks(kind) and self._resources.is_depleted(spec))
         )
         raise InsufficientResourcesError(
             f"the town cannot afford this action: {', '.join(exhausted)}"
@@ -535,6 +630,10 @@ class WorldSim:
     def advance_to(self, tick: int) -> WorldState:
         """Move the clock forward to an absolute tick.
 
+        The clock walks forward one tick at a time, so the daily decay is
+        applied once per day boundary the walk crosses. Waiting is free for
+        the player, but the town still eats while the player waits.
+
         Args:
             tick: Absolute tick to reach.
 
@@ -550,6 +649,24 @@ class WorldSim:
             raise ValueError(f"tick {tick} is in the past (current tick is {self._tick})")
         while self._tick < tick:
             self._tick = advance(self._tick)
+            self._apply_day_crossing()
+        return self.state()
+
+    def reset(self) -> WorldState:
+        """Restore the simulation to the state the cycle starts with.
+
+        The clock goes back to the tick 0, the decisions are cleared and the
+        provisions return to their ``initial`` amount, with an empty daily
+        spending. The reset is the way a run is restarted without reloading
+        the content document.
+
+        Returns:
+            The derived world state at the tick 0.
+        """
+        self._tick = 0
+        self._decisions.clear()
+        self._resources = initial_state(self._resource_specs)
+        self._decayed_days = 0
         return self.state()
 
 

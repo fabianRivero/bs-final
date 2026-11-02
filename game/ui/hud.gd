@@ -46,6 +46,18 @@ var _root: Control = null
 ## Whether the help overlay is open.
 var _is_help_open: bool = false
 
+## Colour of a provision that is in a healthy state.
+const COLOR_HEALTHY: Color = Color(0.95, 0.93, 0.85)
+
+## Colour of a provision that fell below its critical threshold.
+const COLOR_CRITICAL: Color = Color(0.92, 0.42, 0.38)
+
+## Colour of a provision that ran out.
+const COLOR_DEPLETED: Color = Color(0.72, 0.24, 0.22)
+
+## Colour of the amount spent today.
+const COLOR_SPENT: Color = Color(0.62, 0.60, 0.54)
+
 
 func _ready() -> void:
 	## Build the HUD and subscribe to the clock.
@@ -210,11 +222,18 @@ func _rebuild_resource_row() -> void:
 		label.name = "Resource_%s" % String(resource_id)
 		resource_row.add_child(label)
 
+		var spent: Label = _make_label("", 12)
+		spent.name = "Spent_%s" % String(resource_id)
+		spent.add_theme_color_override("font_color", COLOR_SPENT)
+		resource_row.add_child(spent)
+
 
 ## Refresh the amount shown by every resource label.
 ##
-## A resource in crisis is shown in red, so the player sees the town running
-## out without reading a number.
+## A resource in crisis is shown in red and a resource that ran out in a
+## darker red, so the player sees the town running out without reading a
+## number. The amount spent today is shown next to the stock, so the shape
+## of the day is visible at a glance.
 func _refresh_resources() -> void:
 	if resource_row == null:
 		return
@@ -226,16 +245,31 @@ func _refresh_resources() -> void:
 		if not (child is Label):
 			continue
 		var label: Label = child
-		var resource_id: String = label.name.replace("Resource_", "")
+		var node_name: String = label.name
+		if node_name.begins_with("Spent_"):
+			continue
+		var resource_id: String = node_name.replace("Resource_", "")
 		var spec: Dictionary = game_state.resources.get(resource_id, {})
 		if spec.is_empty():
 			continue
 		var amount: int = int(game_state.resource_amount(resource_id))
 		label.text = "%s %d" % [String(spec.get("label", resource_id)), amount]
-		if bool(game_state.is_resource_critical(resource_id)):
-			label.add_theme_color_override("font_color", Color(0.92, 0.42, 0.38))
+
+		var state: String = String(game_state.resource_state(resource_id))
+		if state == "depleted":
+			label.add_theme_color_override("font_color", COLOR_DEPLETED)
+		elif state == "critical":
+			label.add_theme_color_override("font_color", COLOR_CRITICAL)
 		else:
-			label.add_theme_color_override("font_color", Color(0.95, 0.93, 0.85))
+			label.add_theme_color_override("font_color", COLOR_HEALTHY)
+
+		var spent_label: Label = resource_row.get_node_or_null("Spent_%s" % resource_id)
+		if spent_label != null:
+			var spent: int = int(game_state.resource_spent_today(resource_id))
+			if spent > 0:
+				spent_label.text = "-%d today" % spent
+			else:
+				spent_label.text = ""
 
 
 ## Update the decision counter.

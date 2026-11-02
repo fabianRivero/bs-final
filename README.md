@@ -327,6 +327,12 @@ final-project-aldermere/
   96 ticks per day and 480 ticks per cycle, with pure conversion helpers
   between ticks and calendar instants, inclusive deadline comparisons and an
   explicit `ClockOverflowError` instead of silent wrap-around.
+- **A finite stock of provisions.** The town lives off a mine that is closed,
+  so nothing comes in and the stores fall on their own. Three provisions are
+  spent **per action**, never per tick: waiting is free, but the town eats
+  every day that passes. A provision below its critical threshold doubles
+  the price of the actions it gates, and a provision that ran out refuses
+  them outright.
 - **Derived world state.** The world is never stored. `WorldState` is a pure
   function of `(tick, decisions)`, so a save file only needs the tick, the
   player's decisions and the position, and reloading reconstructs exactly the
@@ -381,6 +387,74 @@ final-project-aldermere/
   candidates from the game's own table and can never write flags or
   conditions; the API key stays in the Python process and never reaches the
   client.
+
+---
+
+## The Provisions of the Town
+
+The mine of Aldermere is **closed**. That single fact drives the whole
+second half of the game: nothing enters the town, the people eat every day,
+and the food goes down whether the player acts or not. The provisions are
+the real clock of the run, more than the 480 ticks are.
+
+### The three resources
+
+| id | Label | `initial` | `per_action` | `critical_at` | `daily_decay` | Gates |
+|---|---|---|---|---|---|---|
+| `RES_FOOD` | Food | 24 | 1 | 6 | 2 | — |
+| `RES_MEDICINE` | Medicine | 10 | 1 | 3 | 1 | `treat_sick` |
+| `RES_FUEL` | Fuel | 8 | 1 | 2 | 1 | `prepare_sample` |
+
+Every number is derived from the arithmetic of the cycle: **480 ticks, 5
+days, 96 ticks per day**.
+
+**`RES_FOOD` — 24 units, 1 per action, critical below 6, 2 per day.**
+Nothing enters the town, so the food only goes down: `24 - 4 × 2 = 16`
+after the four day boundaries inside the cycle (ticks 96, 192, 288 and 384),
+and `24 - 5 × 2 = 14` once the closing tick 480 opens Day 6. A player who
+acts 40 to 60 times spends 40 to 60 units on top of that, so the food ends
+the run **low but not empty** for a careful player and **gone** for an
+explorer who wanders. The threshold of 6 is roughly three days of decay: the
+player is warned before the town starts to starve, but the warning arrives
+exactly when the player has already spent the margin.
+
+**`RES_MEDICINE` — 10 units, 1 per action, critical below 3, 1 per day.**
+The mine stores hold the only stock of medicine and antitoxin, and the mine
+is closed. Ten units at one per action is ten treatments: enough to see the
+illness through, not enough to treat everybody. Below 3 the remaining doses
+cannot cover the sick, which is the point where the cure path becomes a
+race against the decay.
+
+**`RES_FUEL` — 8 units, 1 per action, critical below 2, 1 per day.**
+The oil of the mine drives the **calcination furnace where the vaccine
+sample is prepared** and the **gas lamp of the hospital** where the sick
+are kept. It is not a generic expense: it is the provision that *enables a
+concrete action*, the `"prepare_sample"` one. Eight units is eight
+preparations, so the sample can be prepared twice over before the stores
+run dry, and below 2 the furnace cannot be kept alight. Because the oil
+comes out of the mine, sealing the shaft does not only close the source of
+food: it closes the source of the cure as well.
+
+### The rules
+
+| Rule | Behaviour |
+|---|---|
+| **Cost** | A resource is charged `per_action` per action. Waiting is free. |
+| **Daily decay** | Every resource loses `daily_decay` when the clock **crosses a day boundary** — from tick 95 to 96, from 191 to 192, and so on. Never per tick, so one crossing is always one day. The closing tick 480 opens Day 6 and applies the fifth decay. |
+| **Critical** | A resource is critical when its amount falls **strictly below** `critical_at`. The actions it gates then cost **double** (`CRITICAL_COST_MULTIPLIER = 2`): the town is short of everything and has to make do with worse material, walk further and work longer. |
+| **Depleted** | A resource that reached **0** refuses the actions it gates outright: the action fails with `InsufficientResourcesError`, and **neither the tick nor the provisions are consumed**. |
+| **Clamping** | An amount never goes negative. It is clamped to 0. |
+| **Daily spending** | `ResourceState.spent_today` records what the player spent today, so the HUD can show "food 24 → 18 (−6 today)". It is **reset** when the day crosses. The decay is not counted in it: the town eating is not the player spending. |
+
+### Where the code lives
+
+| Piece | Module |
+|---|---|
+| The specifications, the state and the rules | `core/resources.py` |
+| The application of the decay and the spending | `core/world.py` (`WorldSim._apply_day_crossing`) |
+| The content model and its validators | `content/schema.py` (`ResourceSpec`) |
+| The authored numbers | `content/base/resources.json` |
+| The GDScript mirror | `game/autoload/game_state.gd` |
 
 ---
 

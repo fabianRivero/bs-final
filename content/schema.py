@@ -131,6 +131,7 @@ ID_PREFIXES: Mapping[str, str] = {
     "ending": "END_",
     "lighting": "LGT_",
     "cause": "CAUSE_",
+    "resource": "RES_",
 }
 
 #: Number of lighting phases the canonical table is made of.
@@ -1235,13 +1236,20 @@ class ResourceSpec(StrictModel):
     only knows the amounts and the costs.
 
     Attributes:
-        id: Identifier of the resource, e.g. ``"RES_FOOD"``.
+        id: Identifier of the resource, e.g. ``"RES_FOOD"``. It always
+            carries the ``RES_`` prefix reserved for resources.
         label: Display name of the resource.
         initial: Amount the town starts the cycle with. Must be at least 0.
         per_action: Amount consumed by a single action. Must be at least 0.
         critical_at: Amount at or below which the town suffers. A resource
             is in crisis when its amount falls **strictly below** this
             value.
+        daily_decay: Amount the town consumes on its own when a day passes.
+            Must be at least 0. The decay is applied when the clock crosses
+            a day boundary, never per tick.
+        blocks_actions: Kinds of action the resource gates. A depleted
+            resource refuses those actions outright; a critical one makes
+            them cost twice as much. The kinds must be unique.
     """
 
     id: str
@@ -1249,8 +1257,27 @@ class ResourceSpec(StrictModel):
     initial: int
     per_action: int
     critical_at: int
+    daily_decay: int = 0
+    blocks_actions: tuple[str, ...] = ()
 
-    @field_validator("initial", "per_action", "critical_at")
+    @field_validator("id")
+    @classmethod
+    def _check_id_prefix(cls, value: str) -> str:
+        """Check the identifier prefix.
+
+        Args:
+            value: Identifier to check.
+
+        Returns:
+            The validated identifier.
+
+        Raises:
+            ValueError: If the prefix is wrong.
+        """
+        _validate_id_prefix(value, "resource", "resource.id")
+        return value
+
+    @field_validator("initial", "per_action", "critical_at", "daily_decay")
     @classmethod
     def _check_not_negative(cls, value: int, info: Any) -> int:
         """Check that a quantity is not negative.
@@ -1268,6 +1295,28 @@ class ResourceSpec(StrictModel):
         field_name = info.field_name or "resource amount"
         if value < 0:
             raise ValueError(f"resource.{field_name} must be >= 0, got {value}")
+        return value
+
+    @field_validator("blocks_actions")
+    @classmethod
+    def _check_blocked_kinds(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Check that the gated action kinds are usable and unique.
+
+        Args:
+            value: The kinds to check.
+
+        Returns:
+            The validated kinds.
+
+        Raises:
+            ValueError: If a kind is empty or two kinds are the same.
+        """
+        for kind in value:
+            if not kind:
+                raise ValueError("resource.blocks_actions must hold non-empty action kinds")
+        duplicates = sorted({kind for kind in value if value.count(kind) > 1})
+        if duplicates:
+            raise ValueError(f"resource.blocks_actions holds duplicated kinds {duplicates}")
         return value
 
     @model_validator(mode="after")

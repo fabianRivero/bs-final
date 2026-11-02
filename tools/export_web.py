@@ -139,6 +139,12 @@ def _resources_document(raw_resources: object) -> list[dict[str, Any]]:
     always present, even when the town stocks nothing: Godot then knows the
     shape of the contract instead of guessing it.
 
+    Every resource is exported with the fields the presentation layer needs
+    to mirror the simulation: ``initial``, ``per_action``, ``critical_at``,
+    ``daily_decay`` and ``blocks_actions``. The last two are the ones the
+    GDScript mirror of ``core/resources.py`` needs to reproduce the daily
+    decay and the cost multiplier of a critical resource.
+
     Args:
         raw_resources: The ``resources`` field of the content document.
 
@@ -150,7 +156,26 @@ def _resources_document(raw_resources: object) -> list[dict[str, Any]]:
     """
     if not isinstance(raw_resources, list):
         raise ValueError("the 'resources' field must be a list")
-    return [dict(raw) for raw in raw_resources]
+
+    document: list[dict[str, Any]] = []
+    for raw in raw_resources:
+        if not isinstance(raw, dict):
+            raise ValueError("every resource must be an object")
+        blocks = raw.get("blocks_actions", [])
+        if not isinstance(blocks, list) or not all(isinstance(kind, str) for kind in blocks):
+            raise ValueError("the 'blocks_actions' field must be a list of strings")
+        document.append(
+            {
+                "id": str(raw.get("id", "")),
+                "label": str(raw.get("label", raw.get("id", ""))),
+                "initial": int(raw.get("initial", 0)),
+                "per_action": int(raw.get("per_action", 0)),
+                "critical_at": int(raw.get("critical_at", 0)),
+                "daily_decay": int(raw.get("daily_decay", 0)),
+                "blocks_actions": list(blocks),
+            }
+        )
+    return document
 
 
 def validate_document(document: dict[str, Any]) -> None:
@@ -253,6 +278,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  content:    {written}")
     print(f"  lighting:   {len(document['lighting'])} phases")
     print(f"  resources:  {len(document['resources'])} provisions")
+    for resource in document["resources"]:
+        blocks = resource["blocks_actions"]
+        blocked = ", ".join(blocks) if blocks else "-"
+        print(
+            f"    - {resource['id']:<14} {resource['label']:<10}"
+            f" initial {resource['initial']:>3}"
+            f"  per_action {resource['per_action']}"
+            f"  critical_at {resource['critical_at']}"
+            f"  daily_decay {resource['daily_decay']}"
+            f"  blocks [{blocked}]"
+        )
     print(
         f"  clock:      {MINUTES_PER_TICK} min/tick, {TICKS_PER_DAY} ticks/day, "
         f"{CYCLE_DAYS} days, {TOTAL_TICKS} ticks"

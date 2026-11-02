@@ -60,7 +60,7 @@ def test_fixture_is_complete(world: WorldContent) -> None:
     assert len(world.endings) == 2
     assert len(world.lighting) == 7
     assert len(world.rumors) == 2
-    assert len(world.resources) == 2
+    assert len(world.resources) == 3
 
 
 def test_the_resources_of_the_fixture_are_sane(world: WorldContent) -> None:
@@ -76,6 +76,7 @@ def test_the_resources_of_the_fixture_are_sane(world: WorldContent) -> None:
         assert resource.critical_at <= resource.initial
         assert resource.per_action > 0
         assert resource.label
+        assert resource.daily_decay >= 0
 
 
 def test_the_provisions_of_the_fixture_can_be_spent(world: WorldContent) -> None:
@@ -101,12 +102,55 @@ def test_the_resources_of_the_fixture_build_a_core_state(world: WorldContent) ->
             initial=resource.initial,
             per_action=resource.per_action,
             critical_at=resource.critical_at,
+            daily_decay=resource.daily_decay,
+            blocks_actions=resource.blocks_actions,
         )
         for resource in world.resources
     ]
     state = initial_state(specs)
     assert state.amount(specs[0].id) == specs[0].initial
     assert derive_crisis(state, specs) == ()
+
+
+def test_the_fixture_declares_the_three_provisions_of_the_town(world: WorldContent) -> None:
+    """The town stocks food, medicine and fuel."""
+    assert [resource.id for resource in world.resources] == [
+        "RES_FOOD",
+        "RES_MEDICINE",
+        "RES_FUEL",
+    ]
+
+
+def test_the_resource_ids_use_the_reserved_prefix(world: WorldContent) -> None:
+    """Every provision carries the prefix reserved for resources."""
+    for resource in world.resources:
+        assert resource.id.startswith("RES_")
+
+
+def test_the_provisions_decay_but_never_below_zero(world: WorldContent) -> None:
+    """The town eats every day, and the decay is a sane amount."""
+    for resource in world.resources:
+        assert resource.daily_decay >= 0
+        assert resource.daily_decay <= resource.initial
+
+
+def test_the_fuel_enables_the_preparation_of_the_sample(world: WorldContent) -> None:
+    """Fuel is the resource that gates a concrete action.
+
+    The fuel of the mine drives the calcination furnace where the vaccine
+    sample is prepared, so it is the provision that decides whether the
+    cure path is open at all.
+    """
+    fuel = next(resource for resource in world.resources if resource.id == "RES_FUEL")
+    assert fuel.blocks_actions == ("prepare_sample",)
+
+
+def test_every_blocked_action_is_named(world: WorldContent) -> None:
+    """A gated action must name something the player can try."""
+    for resource in world.resources:
+        for kind in resource.blocks_actions:
+            assert kind
+            assert kind == kind.strip()
 
 
 def test_every_npc_with_a_dialogue_root_has_that_dialogue(world: WorldContent) -> None:

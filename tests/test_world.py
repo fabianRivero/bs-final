@@ -7,7 +7,8 @@ and that the same sequence of actions always produces the same world.
 
 The provisions of the town follow the same rule as the tick: an action the
 town cannot afford raises :class:`InsufficientResourcesError` and consumes
-**neither** a tick nor a resource.
+**neither** a tick nor a resource. The town also eats on its own: the daily
+decay is applied exactly when the clock crosses a day boundary.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from core.lighting import LightState
 from core.resources import ResourceSpec
 from core.schedule import NpcState
 from core.state import Decision, WorldState
-from core.time import TOTAL_TICKS, ClockOverflowError, to_tick
+from core.time import TICKS_PER_DAY, TOTAL_TICKS, ClockOverflowError, to_tick
 from core.world import (
     InsufficientResourcesError,
     InvalidActionError,
@@ -810,4 +811,495 @@ def test_load_rejects_a_resource_with_a_non_string_label(tmp_path: Path) -> None
         [{"id": "RES_FOOD", "label": 7, "initial": 5, "per_action": 1, "critical_at": 2}],
     )
     with pytest.raises(WorldContentError, match="label must be a string"):
+        WorldSim.load(path)
+
+
+# ----------------------------------------------------------------------
+# The kind of the action
+# ----------------------------------------------------------------------
+
+
+def test_an_action_costs_more_when_its_resource_is_critical(tmp_path: Path) -> None:
+    """A resource in crisis doubles the price of the action it gates.
+
+    The stock starts at 5 and the threshold at 3. The threshold is
+    exclusive, so the stock is healthy at 3 and becomes critical at 2:
+    from then on the ``"prepare_sample"`` action costs two units of fuel
+    instead of one.
+    """
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 3,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 4
+    assert sim.resources().spent_on("RES_FUEL") == 1
+
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 3
+    assert sim.resources().spent_on("RES_FUEL") == 2
+
+    # At the threshold the stock is still healthy, so the action costs one.
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 2
+    assert sim.resources().spent_on("RES_FUEL") == 3
+
+    # Below the threshold the action costs double.
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 0
+    assert sim.resources().spent_on("RES_FUEL") == 5
+
+
+def test_an_action_costs_its_plain_price_when_its_resource_is_healthy(
+    tmp_path: Path,
+) -> None:
+    """A resource above its threshold is charged its usual price."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 4,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 3
+    assert sim.resources().spent_on("RES_FUEL") == 1
+
+
+def test_a_depleted_resource_refuses_the_action_it_gates(tmp_path: Path) -> None:
+    """The town cannot work without the material."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 1,
+                "per_action": 1,
+                "critical_at": 1,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    assert sim.resources().amount("RES_FUEL") == 0
+
+    with pytest.raises(InsufficientResourcesError):
+        sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+
+    assert sim.tick() == 1
+    assert sim.resources().amount("RES_FUEL") == 0
+
+
+def test_a_depleted_resource_does_not_consume_a_tick(tmp_path: Path) -> None:
+    """A refused action leaves the clock untouched."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 0,
+                "per_action": 1,
+                "critical_at": 0,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    with pytest.raises(InsufficientResourcesError):
+        sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+
+    assert sim.tick() == 0
+    assert sim.decisions() == ()
+
+
+def test_can_afford_reports_the_price_of_an_action_kind(tmp_path: Path) -> None:
+    """The simulator answers the question before the action is taken."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 2,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    assert sim.can_afford("prepare_sample") is True
+    sim.advance(Decision(kind="prepare_sample", target="OBJ_X", tick=0, payload={}))
+    # One unit left and the threshold is two: the action now costs double.
+    assert sim.can_afford("prepare_sample") is False
+
+
+# ----------------------------------------------------------------------
+# The daily decay
+# ----------------------------------------------------------------------
+
+
+def _write_decaying_document(tmp_path: Path, daily_decay: int = 2) -> Path:
+    """Write a content document with one decaying resource.
+
+    Args:
+        tmp_path: Directory to write the document into.
+        daily_decay: Decay of the resource, per day.
+
+    Returns:
+        The path of the written document.
+    """
+    return _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 20,
+                "per_action": 1,
+                "critical_at": 5,
+                "daily_decay": daily_decay,
+            }
+        ],
+    )
+
+
+def test_the_decay_is_not_applied_before_the_first_day_boundary(tmp_path: Path) -> None:
+    """The town has not eaten yet while it is still Day 1."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance_to(TICKS_PER_DAY - 1)
+    assert sim.tick() == 95
+    assert sim.resources().amount("RES_FOOD") == 20
+
+
+@pytest.mark.parametrize(
+    ("tick", "expected_day"),
+    [
+        (TICKS_PER_DAY, 2),
+        (2 * TICKS_PER_DAY, 3),
+        (3 * TICKS_PER_DAY, 4),
+        (4 * TICKS_PER_DAY, 5),
+        (5 * TICKS_PER_DAY, 6),
+    ],
+)
+def test_the_decay_is_applied_exactly_at_the_day_boundary(
+    tmp_path: Path,
+    tick: int,
+    expected_day: int,
+) -> None:
+    """Each day boundary applies exactly one day of decay.
+
+    The cycle has five day boundaries inside it (ticks 96, 192, 288 and 384
+    open Days 2 to 5) and a fifth one at the closing tick 480, which opens
+    Day 6.
+    """
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance_to(tick)
+    crossings = tick // TICKS_PER_DAY
+    assert sim.resources().amount("RES_FOOD") == 20 - 2 * crossings
+    assert sim.day() == expected_day
+
+
+def test_the_decay_is_applied_once_per_crossing_and_not_per_tick(tmp_path: Path) -> None:
+    """Waiting for a whole day costs the town one day of provisions."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance_to(TICKS_PER_DAY)
+    assert sim.resources().amount("RES_FOOD") == 18
+
+    sim.advance_to(2 * TICKS_PER_DAY)
+    assert sim.resources().amount("RES_FOOD") == 16
+
+
+def test_the_closing_tick_applies_the_last_decay(tmp_path: Path) -> None:
+    """The closing tick 480 opens Day 6 and applies the fifth decay."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance_to(TOTAL_TICKS)
+    assert sim.tick() == 480
+    assert sim.day() == 6
+    assert sim.resources().amount("RES_FOOD") == 20 - 2 * 5
+
+
+def test_the_day_of_the_closing_tick_is_the_sixth(tmp_path: Path) -> None:
+    """The cycle opens on Day 1 and closes on Day 6."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    assert sim.day() == 1
+    assert sim.state().day == 1
+    sim.advance_to(TOTAL_TICKS)
+    assert sim.day() == 6
+    assert sim.state().day == 6
+
+
+def test_the_daily_spending_is_reset_at_the_day_boundary(tmp_path: Path) -> None:
+    """The counter reports the spending of the current day only."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    assert sim.resources().spent_on("RES_FOOD") == 1
+
+    sim.advance_to(TICKS_PER_DAY)
+    assert sim.resources().spent_on("RES_FOOD") == 0
+
+
+def test_the_daily_spending_is_reset_when_waiting_crosses_a_day(tmp_path: Path) -> None:
+    """Waiting for a whole day also resets the counter."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    sim.advance_to(TICKS_PER_DAY)
+    assert sim.resources().spent_on("RES_FOOD") == 0
+
+
+def test_the_decay_clamps_to_zero(tmp_path: Path) -> None:
+    """A town that eats more than it has ends up at zero, never below."""
+    path = _write_decaying_document(tmp_path, daily_decay=9)
+    sim = WorldSim.load(path)
+
+    sim.advance_to(TOTAL_TICKS)
+    assert sim.resources().amount("RES_FOOD") == 0
+
+
+def test_acting_and_waiting_reach_the_same_stock(tmp_path: Path) -> None:
+    """The order of the payment and the decay is deterministic.
+
+    The action that crosses the boundary is paid at its usual price and the
+    decay of the new day is applied afterwards. A player who acts on the
+    last tick of a day therefore pays exactly the same as a player who
+    waits for it, plus the price of the action.
+    """
+    path = _write_decaying_document(tmp_path)
+    acting = WorldSim.load(path)
+    waiting = WorldSim.load(path)
+
+    acting.advance(TALK_MARTA)
+    acting.advance_to(TICKS_PER_DAY)
+    waiting.advance_to(TICKS_PER_DAY)
+
+    # The waiting player only pays the decay, the acting player also pays
+    # the price of the one action.
+    assert waiting.resources().amount("RES_FOOD") == 18
+    assert acting.resources().amount("RES_FOOD") == 17
+
+
+# ----------------------------------------------------------------------
+# Reset
+# ----------------------------------------------------------------------
+
+
+def test_reset_restores_the_initial_provisions(tmp_path: Path) -> None:
+    """A run can be restarted without reloading the content."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    sim.advance_to(TICKS_PER_DAY)
+    assert sim.resources().amount("RES_FOOD") < 20
+
+    sim.reset()
+    assert sim.resources().amount("RES_FOOD") == 20
+    assert sim.resources().spent_on("RES_FOOD") == 0
+    assert sim.tick() == 0
+    assert sim.decisions() == ()
+
+
+def test_reset_restores_the_clock_and_the_flags(tmp_path: Path) -> None:
+    """The reset rewinds the whole run."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.advance(TALK_MARTA)
+    assert sim.state().has_flag("talked:NPC_MARTA")
+
+    sim.reset()
+    assert sim.state().flags == frozenset()
+    assert sim.state().tick == 0
+
+
+def test_reset_keeps_the_content(tmp_path: Path) -> None:
+    """The reset does not unload the world."""
+    path = _write_decaying_document(tmp_path)
+    sim = WorldSim.load(path)
+
+    sim.reset()
+    assert sim.npc("NPC_MARTA").name == "Marta"
+    assert len(sim.resource_specs()) == 1
+
+
+# ----------------------------------------------------------------------
+# The new fields of the specifications
+# ----------------------------------------------------------------------
+
+
+def test_load_reads_the_daily_decay_of_a_resource(tmp_path: Path) -> None:
+    """The decay of a resource is part of its specification."""
+    path = _write_decaying_document(tmp_path, daily_decay=3)
+    sim = WorldSim.load(path)
+
+    spec = sim.resource_specs()[0]
+    assert spec.daily_decay == 3
+
+
+def test_load_reads_the_blocked_actions_of_a_resource(tmp_path: Path) -> None:
+    """The gated actions of a resource are part of its specification."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FUEL",
+                "label": "Fuel",
+                "initial": 8,
+                "per_action": 1,
+                "critical_at": 2,
+                "daily_decay": 1,
+                "blocks_actions": ["prepare_sample"],
+            }
+        ],
+    )
+    sim = WorldSim.load(path)
+
+    spec = sim.resource_specs()[0]
+    assert spec.blocks_actions == ("prepare_sample",)
+
+
+def test_load_defaults_the_new_fields_of_a_resource(tmp_path: Path) -> None:
+    """A document written before those fields existed still loads."""
+    path = _write_resource_document(
+        tmp_path,
+        [{"id": "RES_FOOD", "label": "Food", "initial": 5, "per_action": 1, "critical_at": 2}],
+    )
+    sim = WorldSim.load(path)
+
+    spec = sim.resource_specs()[0]
+    assert spec.daily_decay == 0
+    assert spec.blocks_actions == ()
+
+
+def test_load_rejects_a_non_integer_daily_decay(tmp_path: Path) -> None:
+    """The decay of a resource must be an integer."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 2,
+                "daily_decay": "2",
+            }
+        ],
+    )
+    with pytest.raises(WorldContentError, match="daily_decay must be an integer"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_negative_daily_decay(tmp_path: Path) -> None:
+    """The town cannot consume a negative amount."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 2,
+                "daily_decay": -1,
+            }
+        ],
+    )
+    with pytest.raises(WorldContentError, match="daily_decay must be >= 0"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_blocked_actions_field_that_is_not_a_list(tmp_path: Path) -> None:
+    """The gated actions must be a list."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": "prepare_sample",
+            }
+        ],
+    )
+    with pytest.raises(WorldContentError, match="blocks_actions must be a list of strings"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_a_blocked_actions_field_with_a_non_string(tmp_path: Path) -> None:
+    """Every gated action must be named by a string."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": [7],
+            }
+        ],
+    )
+    with pytest.raises(WorldContentError, match="blocks_actions must be a list of strings"):
+        WorldSim.load(path)
+
+
+def test_load_rejects_duplicated_blocked_actions(tmp_path: Path) -> None:
+    """A gated action must not be listed twice."""
+    path = _write_resource_document(
+        tmp_path,
+        [
+            {
+                "id": "RES_FOOD",
+                "label": "Food",
+                "initial": 5,
+                "per_action": 1,
+                "critical_at": 2,
+                "blocks_actions": ["prepare_sample", "prepare_sample"],
+            }
+        ],
+    )
+    with pytest.raises(WorldContentError, match="duplicated blocked action kinds"):
         WorldSim.load(path)

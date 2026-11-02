@@ -122,7 +122,10 @@ class WorldState:
 
     Attributes:
         tick: Tick the snapshot describes.
-        day: Day number of the snapshot, starting at 1.
+        day: Day number of the snapshot, starting at 1. The cycle opens on
+            Day 1 and the closing tick 480 belongs to **Day 6**, the day
+            after the last playable one, exactly like
+            :func:`core.time.to_datetime`.
         hour: Hour of the day, in 24h format.
         minute: Minute within the hour.
         decisions: Decisions taken so far, in chronological order.
